@@ -119,12 +119,14 @@ ipc("amule:getDownloadQueue", async () => {
 ipc("amule:getSharedFiles", async () => {
   requireClient();
   const files = await client.getSharedFiles();
-  const timestamps = mergeCollection(files);
-  for (const f of files) {
+  const downloadQueue = await client.getDownloadQueue();
+  const filesWithoutDownloadQueue = files.filter(f => !downloadQueue.some(d => d.fileHash === f.fileHash));
+  const timestamps = mergeCollection(filesWithoutDownloadQueue);
+  for (const f of filesWithoutDownloadQueue) {
     f.firstSeen = timestamps[f.fileHash] || Date.now();
   }
-  files.sort((a, b) => b.firstSeen - a.firstSeen || (a.fileName || "").localeCompare(b.fileName || ""));
-  return files;
+  filesWithoutDownloadQueue.sort((a, b) => b.firstSeen - a.firstSeen || (a.fileName || "").localeCompare(b.fileName || ""));
+  return filesWithoutDownloadQueue;
 });
 
 ipc("amule:searchAndWaitResults", async ({ query, network, extension }) => {

@@ -32,9 +32,9 @@ const amuleClient = new AmuleClient(AMULE_HOST, AMULE_PORT, AMULE_PASSWORD);
   }
 
   try {
-    amuleClient.close();
-    console.log('Disconnected from aMule');
-  } catch (err) {
-    console.error('Error disconnecting:', err);
+    const downloadQueue = await amuleClient.getDownloadQueue();
+    console.dir(downloadQueue, { depth: null });
+  } catch (error) {
+    console.error('Error executing aMule commands:', error);
   }
 })();
