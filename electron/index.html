@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>aMule</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #238636;
+      --accent-hover: #2ea043;
+      --blue: #388bfd;
+      --red: #f85149;
+      --yellow: #d29922;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .app { display: flex; flex-direction: column; height: 100vh; }
+
+    /* ── Header ── */
+    header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 { font-size: 16px; font-weight: 600; white-space: nowrap; }
+    .conn-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .conn-form input {
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 5px 8px; font-size: 13px;
+    }
+    .conn-form input[type="number"] { width: 80px; }
+    .conn-form input.host { width: 140px; }
+    .conn-form input.pass { width: 120px; }
+
+    /* ── Buttons ── */
+    button {
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 5px 12px; font-size: 13px;
+      cursor: pointer; white-space: nowrap;
+    }
+    button:hover { border-color: var(--muted); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.primary:hover { background: var(--accent-hover); }
+    button.danger { border-color: var(--red); color: var(--red); }
+    button:disabled { opacity: .4; cursor: default; }
+
+    /* ── Status bar ── */
+    .status-bar {
+      padding: 4px 16px;
+      font-size: 12px; color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      display: flex; gap: 16px; align-items: center;
+    }
+    .status-dot {
+      display: inline-block; width: 8px; height: 8px;
+      border-radius: 50%; margin-right: 4px;
+    }
+    .status-dot.off { background: var(--red); }
+    .status-dot.on  { background: var(--accent); }
+
+    /* ── Tabs ── */
+    .tabs {
+      display: flex; gap: 0;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    .tab {
+      padding: 8px 16px; font-size: 13px; font-weight: 500;
+      cursor: pointer; border-bottom: 2px solid transparent;
+      color: var(--muted);
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--text); border-bottom-color: var(--blue); }
+
+    /* ── Panels ── */
+    .panels { flex: 1; overflow: auto; padding: 16px; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    /* ── Table ── */
+    table {
+      width: 100%; border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      text-align: left; padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--bg); }
+    tr:hover td { background: rgba(56,139,253,.06); }
+
+    /* ── Progress ── */
+    .progress-bar {
+      width: 100%; height: 6px;
+      background: var(--border); border-radius: 3px; overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%; background: var(--blue); border-radius: 3px;
+      transition: width .3s;
+    }
+
+    /* ── Link form ── */
+    .link-form {
+      display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;
+    }
+    .link-form input { flex: 1; min-width: 200px; }
+    .link-form input,
+    .search-form input,
+    .search-form select {
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 5px 8px; font-size: 13px;
+    }
+    .search-form select {
+      padding: 5px 4px;
+    }
+    .search-form {
+      display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;
+    }
+    .search-form input { flex: 1; min-width: 200px; }
+
+    /* ── JSON output ── */
+    pre.json {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px; overflow: auto;
+      max-height: 400px; font-size: 12px; white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* ── Discoveries ── */
+    .disc-keywords {
+      display: flex; flex-direction: column; gap: 6px;
+      margin-bottom: 16px;
+    }
+    .disc-kw-row {
+      display: flex; gap: 8px; align-items: center;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 10px;
+    }
+    .disc-kw-row .kw-label { flex: 1; font-weight: 500; }
+    .disc-kw-row select, .disc-add-form select {
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 4px 6px; font-size: 13px;
+    }
+    .disc-add-form {
+      display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;
+    }
+    .disc-add-form input {
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 5px 8px; font-size: 13px; flex: 1; min-width: 160px;
+    }
+    .disc-log {
+      font-size: 12px; color: var(--muted); margin-bottom: 8px;
+      max-height: 48px; overflow: auto;
+    }
+    .tag {
+      display: inline-block; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 1px 6px; font-size: 11px; color: var(--muted);
+      margin-right: 4px;
+    }
+    .time-ago { color: var(--muted); font-size: 12px; }
+
+    /* ── Utilities ── */
+    .mb { margin-bottom: 12px; }
+    .muted { color: var(--muted); }
+    .error { color: var(--red); }
+    .flex-gap { display: flex; gap: 8px; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <h1>aMule</h1>
+    <div class="conn-form">
+      <input id="host" class="host" placeholder="Host" value="127.0.0.1" />
+      <input id="port" type="number" placeholder="Port" value="4712" />
+      <input id="password" class="pass" type="password" placeholder="Password" />
+      <button id="connectBtn" class="primary">Connect</button>
+      <button id="disconnectBtn" class="danger" disabled>Disconnect</button>
+    </div>
+  </header>
+
+  <!-- Status bar -->
+  <div class="status-bar">
+    <span><span class="status-dot off" id="statusDot"></span><span id="statusText">Disconnected</span></span>
+    <span id="speedInfo"></span>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs" id="tabBar">
+    <div class="tab active" data-tab="shared">My Collection</div>
+    <div class="tab" data-tab="search">Search</div>
+    <div class="tab" data-tab="discoveries">Discoveries</div>
+  </div>
+
+  <!-- Panels -->
+  <div class="panels">
+
+    <!-- Shared Files -->
+    <div class="panel active" id="panel-shared">
+      <div class="link-form">
+        <input id="ed2kLink" placeholder="ed2k:// or magnet link" />
+        <button id="addLinkBtn" disabled>Add Link</button>
+        <button id="refreshSharedBtn" disabled>Refresh</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:70px">Action</th>
+            <th>File Name</th>
+            <th style="width:120px">Size</th>
+            <th style="width:100px">Added</th>
+            <th style="width:160px"></th>
+          </tr>
+        </thead>
+        <tbody id="sharedBody"></tbody>
+      </table>
+      <p class="muted mb" id="sharedEmpty" style="display:none">No shared files.</p>
+    </div>
+
+    <!-- Search -->
+    <div class="panel" id="panel-search">
+      <div class="search-form">
+        <input id="searchQuery" placeholder="Search query…" />
+        <select id="searchNetwork">
+          <option value="local">Local</option>
+          <option value="global">Global (ed2k)</option>
+          <option value="kad">Kad</option>
+        </select>
+        <button id="searchBtn" disabled>Search</button>
+      </div>
+      <p class="muted mb" id="searchStatus"></p>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:80px">Action</th>
+            <th>File Name</th>
+            <th style="width:120px">Size</th>
+            <th style="width:80px">Sources</th>
+          </tr>
+        </thead>
+        <tbody id="searchBody"></tbody>
+      </table>
+    </div>
+
+    <!-- Discoveries -->
+    <div class="panel" id="panel-discoveries">
+      <div class="disc-add-form">
+        <input id="discKeywordInput" placeholder="Keywords..."/>
+        <select id="discIntervalSelect">
+          <option value="1h">Every hour</option>
+          <option value="6h" selected>Every 6 hours</option>
+          <option value="1d">Every day</option>
+          <option value="1w">Every week</option>
+        </select>
+        <button id="discAddBtn">Add</button>
+        <button id="discRunNowBtn" disabled>Run All Now</button>
+      </div>
+      <div class="disc-keywords" id="discKeywords"></div>
+      <div class="disc-log" id="discLog"></div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:80px">Action</th>
+            <th>File Name</th>
+            <th style="width:120px">Size</th>
+            <th style="width:80px">Sources</th>
+            <th style="width:120px">Keyword</th>
+            <th style="width:140px">First Seen</th>
+          </tr>
+        </thead>
+        <tbody id="discBody"></tbody>
+      </table>
+      <p class="muted mb" id="discEmpty" style="display:none">No discoveries yet.</p>
+    </div>
+
+  </div>
+</div>
+
+<script src="renderer.js"></script>
+</body>
+</html>

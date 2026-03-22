@@ -1,0 +1,19 @@
+{
+  "name": "amule-discoveries",
+  "version": "1.0.0",
+  "description": "aMule discoveries",
+  "scripts": {
+    "test": "node examples/test.js",
+    "start": "electron electron/main.js"
+  },
+  "keywords": [
+    "amule",
+    "p2p",
+    "ed2k"
+  ],
+  "author": "tbo47",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^41.0.3"
+  }
+}
