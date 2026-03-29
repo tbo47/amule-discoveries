@@ -3,6 +3,8 @@
 // ── DOM references ──
 const $ = (id) => document.getElementById(id);
 
+const loginScreen  = $("loginScreen");
+const mainApp      = $("mainApp");
 const hostEl       = $("host");
 const portEl       = $("port");
 const passwordEl   = $("password");
@@ -77,8 +79,14 @@ const discLog           = $("discLog");
 
 let sharedTimer = null;
 
-function setConnected(val) {
+function setLoginUiVisible(loggedIn) {
+  loginScreen.classList.toggle("hidden", loggedIn);
+  mainApp.classList.toggle("hidden", !loggedIn);
+}
+
+async function setConnected(val) {
   connected = val;
+  setLoginUiVisible(val);
   statusDot.className = "status-dot " + (val ? "on" : "off");
   statusText.textContent = val ? "Connected" : "Disconnected";
   connectBtn.disabled = val;
@@ -90,7 +98,8 @@ function setConnected(val) {
   if (!val) speedInfo.textContent = "";
 
   if (val) {
-    loadSharedFiles();
+    await loadSharedFiles();
+    setTimeout(loadSharedFiles, 1_000);
     sharedTimer = setInterval(loadSharedFiles, 10_000);
   } else if (sharedTimer) {
     clearInterval(sharedTimer);
@@ -112,7 +121,10 @@ tabBar.addEventListener("click", (e) => {
 
 // ── Connect / Disconnect ──
 
-connectBtn.addEventListener("click", async () => {
+const loginForm = $("loginForm");
+
+loginForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
   const host = hostEl.value.trim() || "127.0.0.1";
   const port = sanitizePort(portEl.value);
   hostEl.value = host;

@@ -35,6 +35,11 @@ function loadCollection() {
 
 function mergeCollection(sharedFiles) {
   const persisted = loadCollection();
+  if (!sharedFiles || sharedFiles.length === 0) {
+    alert("No shared files found.");
+    return persisted;
+  }
+
   const now = Date.now();
   const updated = {};
 

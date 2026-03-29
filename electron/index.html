@@ -183,21 +183,59 @@
     .muted { color: var(--muted); }
     .error { color: var(--red); }
     .flex-gap { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    /* ── Login vs main app ── */
+    .hidden { display: none !important; }
+    .login-screen {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 32px;
+      min-height: 100vh;
+    }
+    .login-screen h1 { font-size: 22px; font-weight: 600; }
+    .login-screen .conn-form {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 100%;
+      max-width: 320px;
+    }
+    .login-screen .conn-form input { width: 100%; }
+    .login-screen .conn-form input[type="number"] { width: 100%; }
+    .main-app {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+    .main-app header {
+      justify-content: space-between;
+    }
   </style>
 </head>
 <body>
 <div class="app">
 
-  <!-- Header -->
-  <header>
+  <!-- Login (shown until connected) -->
+  <div id="loginScreen" class="login-screen">
     <h1>aMule</h1>
-    <div class="conn-form">
+    <form id="loginForm" class="conn-form" action="#" method="post">
       <input id="host" class="host" placeholder="Host" value="127.0.0.1" />
       <input id="port" type="number" placeholder="Port" value="4712" />
-      <input id="password" class="pass" type="password" placeholder="Password" />
-      <button id="connectBtn" class="primary">Connect</button>
-      <button id="disconnectBtn" class="danger" disabled>Disconnect</button>
-    </div>
+      <input id="password" class="pass" type="password" placeholder="Password" autocomplete="current-password" autofocus />
+      <button type="submit" id="connectBtn" class="primary">Connect</button>
+    </form>
+  </div>
+
+  <!-- Main UI (after login) -->
+  <div id="mainApp" class="main-app hidden">
+  <header>
+    <h1>aMule</h1>
+    <button id="disconnectBtn" class="danger">Disconnect</button>
   </header>
 
   <!-- Status bar -->
@@ -294,6 +332,7 @@
       <p class="muted mb" id="discEmpty" style="display:none">No discoveries yet.</p>
     </div>
 
+  </div>
   </div>
 </div>
 
