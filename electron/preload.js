@@ -18,6 +18,7 @@ const channels = [
   "getConnectionState",
   "getServerList",
   "getCategories",
+  "refreshSharedFiles",
   "openFile",
   "deleteFile",
   "discoveryGetState",

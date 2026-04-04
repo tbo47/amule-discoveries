@@ -180,6 +180,11 @@ ipc("amule:getCategories", async () => {
   return client.getCategories();
 });
 
+ipc("amule:refreshSharedFiles", async () => {
+  requireClient();
+  return client.refreshSharedFiles();
+});
+
 const VLC_PATHS = {
   darwin: ["/Applications/VLC.app/Contents/MacOS/VLC"],
   win32: [

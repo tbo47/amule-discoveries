@@ -26,9 +26,18 @@ const searchNetwork = $("searchNetwork");
 const searchBtn     = $("searchBtn");
 const searchBody    = $("searchBody");
 const searchStatus  = $("searchStatus");
+const searchPopularTags = $("searchPopularTags");
 
 let connected = false;
 let sharedByHash = new Map();
+
+/** Last fetched My Collection rows (server order); sorting is applied in the UI only. */
+let sharedListCache = [];
+/** @type {{ key: "name"|"size"|"popularity"|"added", dir: "asc"|"desc" }} */
+let sharedSort = { key: "added", dir: "desc" };
+const SHARED_SORT_DEFAULTS = { name: "asc", size: "desc", popularity: "desc", added: "desc" };
+
+const sharedThead = $("sharedThead");
 
 // ── Helpers ──
 
@@ -58,6 +67,113 @@ function escapeAttr(str) {
 
 function ed2kUrl(r) {
   return `ed2k://|file|${encodeURIComponent(r.fileName || "unknown")}|${r.fileSize || 0}|${r.fileHash}|/`;
+}
+
+/** Lifetime upload ÷ file size (aMule transferredTotal / fileSize). */
+function uploadRatio(f) {
+  const size = Number(f.fileSize);
+  const up = Number(f.transferredTotal ?? f.transferred) || 0;
+  if (!size || size <= 0) return 0;
+  return up / size;
+}
+
+/** Map each file to 0–5★ by rank within this list (max ratio → 5, min → 0). */
+function starRatingsForList(list) {
+  const ratios = list.map(uploadRatio);
+  const max = Math.max(...ratios, 0);
+  const min = Math.min(...ratios);
+  if (max <= 0) return ratios.map(() => 0);
+  if (max === min) return ratios.map(() => 5);
+  return ratios.map((r) => Math.round((5 * (r - min)) / (max - min)));
+}
+
+function popularityCell(f, stars) {
+  const size = Number(f.fileSize);
+  const up = Number(f.transferredTotal ?? f.transferred) || 0;
+  const r = uploadRatio(f);
+  const tip =
+    size > 0
+      ? `${stars}/5 · ratio ${r.toFixed(2)}× · ${formatBytes(up)} uploaded / ${formatBytes(size)}`
+      : "—";
+  const visual = "★".repeat(stars) + "☆".repeat(5 - stars);
+  return `<span class="stars" title="${escapeAttr(tip)}">${visual}</span>`;
+}
+
+/** Common English + French words (≥3 chars still filtered separately). */
+const STOP_WORDS = new Set(
+  `a an the and or but if so as at by for from in into of off on onto out over to toward with without
+  about after against before between beyond through during across around behind beneath
+  be am is are was were been being have has had do does did done will would shall should could might must can need may
+  this that these those it its he him his she her they them their we us our you your my me mine
+  what which who whom whose where when why how than then though although because while until unless since
+  all any both each every few many more most other some such same own another
+  not no nor yet only just also still even already again once here there now then very
+  each either neither none
+  get got go going gone come came make made take took give gave see saw know knew think thought say said use used try let make
+  yes no ok
+  le la les des un une du de et est pas pour que qui dont ou ni car dans sur avec par sans sous entre vers parmi
+  son sa ses ce cet cette ces aux en y ne plus tout tous toute toutes comme aussi bien tres encore jamais toujours alors donc ainsi
+  moi toi lui elle nous vous eux leur leurs meme autre autres chaque plusieurs quelque
+  lors lorsque depuis lorsqu encore
+  une des vos nos mon ton ta tes leur
+  vostfr vost truefrench french multi multis proper repack internal readnfo nfo wiki redef redif`
+    .split(/\s+/)
+    .filter(Boolean)
+);
+
+/** Codec / release tokens to ignore as keywords. */
+const KEYWORD_SKIP = new Set([
+  "mkv", "mp4", "avi", "wmv", "flv", "mov", "mpg", "mpeg", "m4v", "m2ts", "ts", "vob", "iso", "divx", "xvid",
+  "ac3", "dts", "aac", "srt", "sub", "idx", "ass", "ssa", "bdrip", "dvdrip", "webrip", "brrip", "bluray", "hdtv",
+  "h264", "h265", "x264", "x265", "hevc", "10bit", "720p", "1080p", "2160p", "4k", "hdr", "uhd", "subs", "subtitle",
+  "dvd", "cd", "rip", "dl", "web", "www", "com", "org",
+]);
+
+function tokenizeFileNameForKeywords(name) {
+  if (!name) return [];
+  const parts = name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .split(/[^a-z0-9]+/i);
+  const out = [];
+  for (const w of parts) {
+    if (w.length < 3) continue;
+    if (/^\d+$/.test(w)) continue;
+    if (STOP_WORDS.has(w)) continue;
+    if (KEYWORD_SKIP.has(w)) continue;
+    out.push(w);
+  }
+  return out;
+}
+
+function computePopularKeywordsFromCollection(files) {
+  const counts = new Map();
+  for (const f of files || []) {
+    for (const w of tokenizeFileNameForKeywords(f.fileName || "")) {
+      counts.set(w, (counts.get(w) || 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 10)
+    .map(([word, count]) => ({ word, count }));
+}
+
+function renderSearchPopularKeywords() {
+  if (!searchPopularTags) return;
+  const ranked = computePopularKeywordsFromCollection(sharedListCache);
+  if (ranked.length === 0) {
+    searchPopularTags.innerHTML =
+      '<span class="muted">No keywords yet — files in My Collection will suggest terms here.</span>';
+    return;
+  }
+  searchPopularTags.innerHTML = ranked
+    .map(
+      ({ word, count }) =>
+        `<button type="button" class="search-kw-tag" data-word="${escapeAttr(word)}">${escapeHtml(word)}<span class="kw-n">${count}</span></button>`
+    )
+    .join("");
 }
 
 async function call(method, arg) {
@@ -164,17 +280,76 @@ addLinkBtn.addEventListener("click", async () => {
 
 // ── Shared Files ──
 
+function sortSharedList(list) {
+  const { key, dir } = sharedSort;
+  const mult = dir === "asc" ? 1 : -1;
+  list.sort((a, b) => {
+    let c = 0;
+    switch (key) {
+      case "name":
+        c = (a.fileName || "").localeCompare(b.fileName || "", undefined, { sensitivity: "base" });
+        break;
+      case "size":
+        c = (Number(a.fileSize) || 0) - (Number(b.fileSize) || 0);
+        break;
+      case "popularity":
+        c = uploadRatio(a) - uploadRatio(b);
+        break;
+      case "added":
+        c = (Number(a.firstSeen) || 0) - (Number(b.firstSeen) || 0);
+        break;
+      default:
+        return 0;
+    }
+    if (c !== 0) return mult * c;
+    return (a.fileName || "").localeCompare(b.fileName || "", undefined, { sensitivity: "base" });
+  });
+  return list;
+}
+
+function updateSharedHeaderSortIndicators() {
+  if (!sharedThead) return;
+  for (const th of sharedThead.querySelectorAll("th[data-sort]")) {
+    const key = th.dataset.sort;
+    const ind = th.querySelector(".sort-ind");
+    if (!ind) continue;
+    if (key === sharedSort.key) {
+      th.classList.add("sort-active");
+      ind.textContent = sharedSort.dir === "asc" ? "↑" : "↓";
+    } else {
+      th.classList.remove("sort-active");
+      ind.textContent = "";
+    }
+  }
+}
+
+function applySharedSortAndRender() {
+  if (!sharedListCache.length) {
+    renderSharedFiles([]);
+    updateSharedHeaderSortIndicators();
+    return;
+  }
+  const sorted = sortSharedList(sharedListCache.slice());
+  renderSharedFiles(sorted);
+  updateSharedHeaderSortIndicators();
+}
+
 async function loadSharedFiles() {
   try {
     const list = await call("getSharedFiles");
+    sharedListCache = list || [];
     sharedByHash = new Map();
-    for (const f of (list || [])) {
+    for (const f of sharedListCache) {
       if (f.fileHash) sharedByHash.set(f.fileHash, f);
     }
-    renderSharedFiles(list);
+    applySharedSortAndRender();
     reRenderDiscoveryResults();
+    renderSearchPopularKeywords();
   } catch (err) {
-    sharedBody.innerHTML = `<tr><td colspan="5" class="error">${escapeHtml(err.message)}</td></tr>`;
+    sharedListCache = [];
+    sharedBody.innerHTML = `<tr><td colspan="6" class="error">${escapeHtml(err.message)}</td></tr>`;
+    updateSharedHeaderSortIndicators();
+    renderSearchPopularKeywords();
   }
 }
 
@@ -185,13 +360,15 @@ function renderSharedFiles(list) {
     return;
   }
   sharedEmpty.style.display = "none";
-  sharedBody.innerHTML = list.map((f) => {
+  const ratings = starRatingsForList(list);
+  sharedBody.innerHTML = list.map((f, i) => {
     const path = f.path || "";
     const link = f.ed2kLink || ed2kUrl(f);
     return `<tr>
       <td>${path ? `<button class="shared-play" data-path="${escapeAttr(path)}" data-name="${escapeAttr(f.fileName || "")}" title="Open file">▶ Play</button>` : "—"}</td>
       <td title="${escapeHtml(path)}">${escapeHtml(f.fileName || "?")}</td>
       <td>${formatBytes(f.fileSize)}</td>
+      <td class="muted" style="white-space:nowrap;letter-spacing:1px">${popularityCell(f, ratings[i])}</td>
       <td class="time-ago" title="${f.firstSeen ? new Date(f.firstSeen).toLocaleString() : ""}">${f.firstSeen ? timeAgo(f.firstSeen) : "—"}</td>
       <td style="white-space:nowrap">
         <button class="shared-share" data-link="${escapeAttr(link)}" title="Copy ed2k link">Share</button>
@@ -199,6 +376,22 @@ function renderSharedFiles(list) {
       </td>
     </tr>`;
   }).join("");
+}
+
+if (sharedThead) {
+  sharedThead.addEventListener("click", (e) => {
+    const th = e.target.closest("th[data-sort]");
+    if (!th) return;
+    const key = th.dataset.sort;
+    if (!key || !SHARED_SORT_DEFAULTS[key]) return;
+    if (sharedSort.key === key) {
+      sharedSort.dir = sharedSort.dir === "asc" ? "desc" : "asc";
+    } else {
+      sharedSort.key = key;
+      sharedSort.dir = SHARED_SORT_DEFAULTS[key];
+    }
+    applySharedSortAndRender();
+  });
 }
 
 sharedBody.addEventListener("click", async (e) => {
@@ -237,11 +430,18 @@ sharedBody.addEventListener("click", async (e) => {
   }
 });
 
-refreshSharedBtn.addEventListener("click", loadSharedFiles);
+refreshSharedBtn.addEventListener("click", async () => {
+  try {
+    await call("refreshSharedFiles");
+  } catch (err) {
+    alert("Could not reload shared files on aMule:\n" + err.message);
+  }
+  await loadSharedFiles();
+});
 
 // ── Search ──
 
-searchBtn.addEventListener("click", async () => {
+async function performSearch() {
   const q = searchQuery.value.trim();
   if (!q) return;
   searchBtn.disabled = true;
@@ -266,7 +466,25 @@ searchBtn.addEventListener("click", async () => {
   } finally {
     searchBtn.disabled = !connected;
   }
-});
+}
+
+if (searchPopularTags) {
+  searchPopularTags.addEventListener("click", (e) => {
+    const btn = e.target.closest(".search-kw-tag");
+    if (!btn || !btn.dataset.word) return;
+    searchQuery.value = btn.dataset.word;
+    if (!connected) return;
+    performSearch();
+  });
+}
+
+const searchForm = $("searchForm");
+if (searchForm) {
+  searchForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    performSearch();
+  });
+}
 
 searchBody.addEventListener("click", async (e) => {
   const btn = e.target.closest(".sr-dl");
@@ -443,6 +661,7 @@ loadDiscoveries();
 
 // ── Init ──
 setConnected(false);
+renderSearchPopularKeywords();
 
 (async () => {
   try {

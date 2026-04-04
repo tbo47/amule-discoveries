@@ -215,6 +215,31 @@
     .main-app header {
       justify-content: space-between;
     }
+
+    th.sortable {
+      cursor: pointer;
+      user-select: none;
+    }
+    th.sortable:hover { color: var(--text); }
+    th.sortable .sort-ind {
+      display: inline-block;
+      min-width: 10px;
+      margin-left: 2px;
+      font-size: 10px;
+      color: var(--blue);
+    }
+
+    .search-popular { margin-bottom: 16px; }
+    .search-kw-tag {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .search-kw-tag:hover { border-color: var(--muted); color: var(--text); }
+    .search-kw-tag .kw-n { color: var(--muted); font-size: 11px; margin-left: 4px; }
   </style>
 </head>
 <body>
@@ -226,7 +251,7 @@
     <form id="loginForm" class="conn-form" action="#" method="post">
       <input id="host" class="host" placeholder="Host" value="127.0.0.1" />
       <input id="port" type="number" placeholder="Port" value="4712" />
-      <input id="password" class="pass" type="password" placeholder="Password" autocomplete="current-password" autofocus />
+      <input id="password" class="pass" type="password" placeholder="Password" value="password" autocomplete="current-password" autofocus />
       <button type="submit" id="connectBtn" class="primary">Connect</button>
     </form>
   </div>
@@ -262,12 +287,13 @@
         <button id="refreshSharedBtn" disabled>Refresh</button>
       </div>
       <table>
-        <thead>
+        <thead id="sharedThead">
           <tr>
             <th style="width:70px">Action</th>
-            <th>File Name</th>
-            <th style="width:120px">Size</th>
-            <th style="width:100px">Added</th>
+            <th class="sortable" data-sort="name">File Name<span class="sort-ind" aria-hidden="true"></span></th>
+            <th class="sortable" style="width:120px" data-sort="size">Size<span class="sort-ind" aria-hidden="true"></span></th>
+            <th class="sortable" style="width:98px" data-sort="popularity" title="Relative share volume in this list: 5★ = highest upload ratio, 0★ = lowest">Popularity<span class="sort-ind" aria-hidden="true"></span></th>
+            <th class="sortable" style="width:100px" data-sort="added" title="When the file was first added to the collection">Added<span class="sort-ind" aria-hidden="true"></span></th>
             <th style="width:160px"></th>
           </tr>
         </thead>
@@ -278,14 +304,18 @@
 
     <!-- Search -->
     <div class="panel" id="panel-search">
-      <div class="search-form">
+      <form id="searchForm" class="search-form" action="#" method="post">
         <input id="searchQuery" placeholder="Search query…" />
         <select id="searchNetwork">
           <option value="local">Local</option>
           <option value="global">Global (ed2k)</option>
           <option value="kad">Kad</option>
         </select>
-        <button id="searchBtn" disabled>Search</button>
+        <button type="submit" id="searchBtn" disabled>Search</button>
+      </form>
+      <div class="search-popular">
+        <div class="muted mb">Popular from My Collection</div>
+        <div id="searchPopularTags" class="flex-gap"></div>
       </div>
       <p class="muted mb" id="searchStatus"></p>
       <table>
