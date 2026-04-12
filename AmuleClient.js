@@ -13,6 +13,25 @@ const {
 
 const DEBUG = false;
 
+/**
+ * Attempt to fix Mojibake filenames where UTF-8 bytes were decoded as Latin-1
+ * (e.g. "Ã©" → "é"). Only applies the correction if the round-trip is clean
+ * (no replacement characters), so already-correct strings are left untouched.
+ * Strings containing characters above U+00FF (Cyrillic, Greek, CJK, etc.) are
+ * already correctly decoded Unicode and are returned unchanged.
+ */
+function fixMojibake(str) {
+  if (typeof str !== 'string') return str;
+  for (let i = 0; i < str.length; i++) {
+    if (str.charCodeAt(i) > 0xFF) return str;  // already real Unicode, leave it
+  }
+  try {
+    const decoded = Buffer.from(str, 'latin1').toString('utf8');
+    if (!decoded.includes('\uFFFD')) return decoded;
+  } catch {}
+  return str;
+}
+
 class AmuleClient {
   /**
    * @param {string} host - aMule EC hostname or IP address
@@ -22,6 +41,15 @@ class AmuleClient {
    */
   constructor(host, port, password, options = {}) {
     this.session = new ECProtocol(host, port, password, options);
+
+    // Clear incremental state on reconnection — aMule resets its
+    // server-side diff state, so our XOR buffers and update cache
+    // would produce corrupted data if not cleared.
+    this.session.onReconnected = () => {
+      this._ecBufferState = null;
+      this._updateState = null;
+      console.log('[AmuleClient] Cleared incremental state after reconnection');
+    };
   }
 
   /**
@@ -186,47 +214,6 @@ class AmuleClient {
    */
   async getUploadingQueue() {
     return this._requestTagTree(EC_OPCODES.EC_OP_GET_ULOAD_QUEUE);
-  }
-
-  /**
-   * Ask aMule to request another user's shared file list (GUI: "View Files" on a client in
-   * GenericClientListCtrl — {@code OnViewFiles} calls {@code RequestSharedFileList()}).
-   *
-   * EC: {@code EC_OP_FRIEND} + {@code EC_TAG_FRIEND_SHARED} (empty CUSTOM tag) with child
-   * {@code EC_TAG_CLIENT} (uint32 ECID), same as amule-remote-gui
-   * {@code CFriendListRem::RequestSharedFileList(CClientRef&)}.
-   *
-   * Use the client {@code ecid} from {@link #getUploadingQueue}, {@link #getDownloadQueue}, or
-   * {@link #getUpdate}.
-   *
-   * Stock aMule ExternalConn often answers {@code EC_OP_FAILED} ("not implemented yet"); the
-   * working code path may be disabled ({@code #if 0}).
-   *
-   * @param {number} clientEcid - Remote client ECID
-   * @returns {Promise<{ success: boolean, opcode: number, response: Object }>}
-   */
-  async requestClientSharedFileList(clientEcid) {
-    const reqTags = [
-      this.session.createTag(
-        EC_TAGS.EC_TAG_FRIEND_SHARED,
-        EC_TAG_TYPES.EC_TAGTYPE_CUSTOM,
-        undefined,
-        [
-          {
-            tagId: EC_TAGS.EC_TAG_CLIENT,
-            tagType: EC_TAG_TYPES.EC_TAGTYPE_UINT32,
-            value: clientEcid
-          }
-        ]
-      )
-    ];
-    const response = await this.session.sendPacket(EC_OPCODES.EC_OP_FRIEND, reqTags);
-    if (DEBUG) console.log("[DEBUG] requestClientSharedFileList response:", response);
-    return {
-      success: this._isSuccess(response),
-      opcode: response.opcode,
-      response
-    };
   }
 
   /**
@@ -973,7 +960,7 @@ class AmuleClient {
     for (const sub of tag.children) {
       const val = sub.humanValue;
       switch (sub.tagId) {
-        case EC_TAGS.EC_TAG_PARTFILE_NAME:                    result.fileName = val; break;
+        case EC_TAGS.EC_TAG_PARTFILE_NAME:                    result.fileName = fixMojibake(val); result.rawFileName = val; break;
         case EC_TAGS.EC_TAG_PARTFILE_HASH:                    result.fileHash = val; break;
         case EC_TAGS.EC_TAG_PARTFILE_STATUS:                  result.status = val; break;
         case EC_TAGS.EC_TAG_PARTFILE_SIZE_FULL:               result.fileSize = Number(val); break;
@@ -1026,22 +1013,38 @@ class AmuleClient {
       const decoded = AmuleClient._decodeRLE(fields[raw]);
 
       // Step 2: XOR-reconstruct with previous state
-      // aMule's RLE_Data XOR-diffs against the previous interleaved buffer.
-      // When the gap count changes, the buffer size changes too. aMule
-      // zero-extends (grow) or truncates (shrink) the old buffer before XOR,
-      // so the diff is always the new size. We XOR overlapping bytes with
-      // prev and treat the rest as raw (XOR with implied zeros = identity).
+      // Mirrors aMule's RLE_Data exactly:
+      //   1. Realloc(newSize) — resize m_buff to match incoming size
+      //      (preserves overlap, zero-extends on grow, truncates on shrink)
+      //   2. m_buff[k] ^= decBuf[k] — XOR diff onto resized prev
+      //
+      // IMPORTANT: The data is stored in column-major (interleaved) order.
+      // aMule's Realloc operates on the raw interleaved bytes — it does NOT
+      // de-interleave before resizing. This means on size change, the column
+      // stride changes and the overlapping bytes represent different logical
+      // positions. aMule's own code does this too, so we match it exactly.
       const state = this._ecBufferState.get(ecid) || {};
       const prev = state[out];
       let current;
       let xorApplied = false;
       if (prev) {
-        current = Buffer.from(decoded); // copy decoded
-        const overlapLen = Math.min(decoded.length, prev.length);
-        for (let i = 0; i < overlapLen; i++) {
-          current[i] = decoded[i] ^ prev[i];
+        // Realloc: resize prev to decoded.length (same as aMule's Realloc)
+        let resized;
+        if (prev.length === decoded.length) {
+          resized = Buffer.from(prev); // copy — don't mutate stored state
+        } else if (decoded.length > prev.length) {
+          // Grow: copy old data, zero-fill extension
+          resized = Buffer.alloc(decoded.length, 0);
+          prev.copy(resized, 0, 0, prev.length);
+        } else {
+          // Shrink: truncate to new size
+          resized = Buffer.from(prev.subarray(0, decoded.length));
         }
-        // Bytes beyond overlapLen stay as decoded[i] (XOR with zero = identity)
+        // XOR: resized[k] ^= decoded[k] (same as aMule: m_buff[k] ^= decBuf[k])
+        for (let i = 0; i < decoded.length; i++) {
+          resized[i] ^= decoded[i];
+        }
+        current = resized;
         xorApplied = true;
       } else {
         // First update — no previous state, decoded IS the full data
@@ -1064,10 +1067,6 @@ class AmuleClient {
       } else {
         // partStatus: each byte is a source count
         fields[out] = Array.from(current);
-      }
-
-      if (DEBUG && uint64 && fields[out].length > 0) {
-        console.log(`[EC-RECONSTRUCT]   → ${fields[out].length} pairs, first 3:`, fields[out].slice(0, 3));
       }
 
       // Clean up raw field
@@ -1177,7 +1176,7 @@ class AmuleClient {
     for (const sub of tag.children) {
       const val = sub.humanValue;
       switch (sub.tagId) {
-        case EC_TAGS.EC_TAG_PARTFILE_NAME:               result.fileName = val; break;
+        case EC_TAGS.EC_TAG_PARTFILE_NAME:               result.fileName = fixMojibake(val); result.rawFileName = val; break;
         case EC_TAGS.EC_TAG_PARTFILE_HASH:               result.fileHash = val; break;
         case EC_TAGS.EC_TAG_PARTFILE_SIZE_FULL:          result.fileSize = Number(val); break;
         case EC_TAGS.EC_TAG_KNOWNFILE_XFERRED:           result.transferred = Number(val); break;
@@ -1254,7 +1253,7 @@ class AmuleClient {
         case EC_TAGS.EC_TAG_CLIENT_MOD_VERSION:     result.modVersion = val; break;
         case EC_TAGS.EC_TAG_CLIENT_OS_INFO:         result.osInfo = val; break;
         case EC_TAGS.EC_TAG_CLIENT_KAD_PORT:        result.kadPort = val; break;
-        case EC_TAGS.EC_TAG_PARTFILE_NAME:          result.transferFileName = val; break;
+        case EC_TAGS.EC_TAG_PARTFILE_NAME:          result.transferFileName = fixMojibake(val); break;
         case EC_TAGS.EC_TAG_PARTFILE_SIZE_XFER:     result.transferredSession = val; break;
         case EC_TAGS.EC_TAG_CLIENT_UPLOAD_SESSION:  result.uploadSession = val; break;
       }
@@ -1487,7 +1486,7 @@ class AmuleClient {
         // No children - just use the formatted value directly
         node = formattedValue;
       }
-      
+
       // Handle duplicate keys by converting to array
       if (obj.hasOwnProperty(tag.tagIdStr)) {
         if (!Array.isArray(obj[tag.tagIdStr])) {
@@ -1498,8 +1497,164 @@ class AmuleClient {
         obj[tag.tagIdStr] = node;
       }
     }
-    
+
     return obj;
+  }
+
+  // ==========================================================================
+  // PREFERENCES
+  // ==========================================================================
+
+  /**
+   * Get connection preferences from aMule.
+   * All speed/capacity values are in kB/s.
+   * @returns {Promise<Object>} Connection preferences:
+   *   { slotAllocation (kB/s per upload slot), maxDownload (kB/s, 0=unlimited), maxUpload (kB/s, 0=unlimited),
+   *     dlCapacity (kB/s, graph scale), ulCapacity (kB/s, graph scale),
+   *     tcpPort, udpPort, udpDisabled, maxConnections, autoConnect, ed2kEnabled, kadEnabled }
+   */
+  async getConnectionPreferences() {
+    if (DEBUG) console.log("[DEBUG] Requesting connection preferences...");
+
+    const reqTags = [
+      this.session.createTag(
+        EC_TAGS.EC_TAG_SELECT_PREFS,
+        EC_TAG_TYPES.EC_TAGTYPE_UINT32,
+        EC_PREFS.EC_PREFS_CONNECTIONS
+      )
+    ];
+
+    const response = await this.session.sendPacket(EC_OPCODES.EC_OP_GET_PREFERENCES, reqTags);
+
+    if (DEBUG) console.log("[DEBUG] Connection preferences response:", JSON.stringify(response, null, 2));
+
+    return this._parseConnectionPreferences(response.tags);
+  }
+
+  /**
+   * Set connection preferences on aMule.
+   * Only the fields provided will be updated — omitted fields remain unchanged.
+   * All speed/capacity values are in kB/s.
+   * @param {Object} prefs - Preferences to set (all optional):
+   *   { slotAllocation (kB/s per upload slot), maxDownload (kB/s, 0=unlimited),
+   *     maxUpload (kB/s, 0=unlimited), dlCapacity (kB/s, graph scale), ulCapacity (kB/s, graph scale),
+   *     maxConnections }
+   * @returns {Promise<boolean>} True if preferences were set successfully
+   */
+  async setConnectionPreferences(prefs) {
+    if (DEBUG) console.log("[DEBUG] Setting connection preferences:", prefs);
+
+    const children = [];
+
+    if (prefs.slotAllocation !== undefined) {
+      children.push({
+        tagId: EC_TAGS.EC_TAG_CONN_SLOT_ALLOCATION,
+        tagType: EC_TAG_TYPES.EC_TAGTYPE_UINT16,
+        value: prefs.slotAllocation
+      });
+    }
+    if (prefs.maxDownload !== undefined) {
+      children.push({
+        tagId: EC_TAGS.EC_TAG_CONN_MAX_DL,
+        tagType: EC_TAG_TYPES.EC_TAGTYPE_UINT16,
+        value: prefs.maxDownload
+      });
+    }
+    if (prefs.maxUpload !== undefined) {
+      children.push({
+        tagId: EC_TAGS.EC_TAG_CONN_MAX_UL,
+        tagType: EC_TAG_TYPES.EC_TAGTYPE_UINT16,
+        value: prefs.maxUpload
+      });
+    }
+    if (prefs.dlCapacity !== undefined) {
+      children.push({
+        tagId: EC_TAGS.EC_TAG_CONN_DL_CAP,
+        tagType: EC_TAG_TYPES.EC_TAGTYPE_UINT32,
+        value: prefs.dlCapacity
+      });
+    }
+    if (prefs.ulCapacity !== undefined) {
+      children.push({
+        tagId: EC_TAGS.EC_TAG_CONN_UL_CAP,
+        tagType: EC_TAG_TYPES.EC_TAGTYPE_UINT32,
+        value: prefs.ulCapacity
+      });
+    }
+    if (prefs.maxConnections !== undefined) {
+      children.push({
+        tagId: EC_TAGS.EC_TAG_CONN_MAX_CONN,
+        tagType: EC_TAG_TYPES.EC_TAGTYPE_UINT16,
+        value: prefs.maxConnections
+      });
+    }
+
+    if (children.length === 0) {
+      throw new Error('No preferences provided');
+    }
+
+    const reqTags = [
+      this.session.createTag(
+        EC_TAGS.EC_TAG_PREFS_CONNECTIONS,
+        EC_TAG_TYPES.EC_TAGTYPE_CUSTOM,
+        undefined,
+        children
+      )
+    ];
+
+    const response = await this.session.sendPacket(EC_OPCODES.EC_OP_SET_PREFERENCES, reqTags);
+    return this._isSuccess(response);
+  }
+
+  /**
+   * Parse connection preferences from EC response tags.
+   * @param {Object[]} tags - Response tags
+   * @returns {Object} Parsed preferences
+   * @private
+   */
+  _parseConnectionPreferences(tags) {
+    const result = {};
+    const prefsTag = tags.find(t => t.tagId === EC_TAGS.EC_TAG_PREFS_CONNECTIONS);
+    if (!prefsTag || !prefsTag.children) return result;
+
+    // Value tags — read humanValue
+    const valueFields = {
+      [EC_TAGS.EC_TAG_CONN_SLOT_ALLOCATION]: 'slotAllocation',
+      [EC_TAGS.EC_TAG_CONN_MAX_DL]: 'maxDownload',
+      [EC_TAGS.EC_TAG_CONN_MAX_UL]: 'maxUpload',
+      [EC_TAGS.EC_TAG_CONN_DL_CAP]: 'dlCapacity',
+      [EC_TAGS.EC_TAG_CONN_UL_CAP]: 'ulCapacity',
+      [EC_TAGS.EC_TAG_CONN_TCP_PORT]: 'tcpPort',
+      [EC_TAGS.EC_TAG_CONN_UDP_PORT]: 'udpPort',
+      [EC_TAGS.EC_TAG_CONN_MAX_CONN]: 'maxConnections'
+    };
+
+    // Presence tags — present = true, absent = false
+    const presenceFields = {
+      [EC_TAGS.EC_TAG_CONN_UDP_DISABLE]: 'udpDisabled',
+      [EC_TAGS.EC_TAG_CONN_AUTOCONNECT]: 'autoConnect',
+      [EC_TAGS.EC_TAG_NETWORK_ED2K]: 'ed2kEnabled',
+      [EC_TAGS.EC_TAG_NETWORK_KADEMLIA]: 'kadEnabled'
+    };
+
+    // Initialize presence fields to false (absence = false)
+    for (const field of Object.values(presenceFields)) {
+      result[field] = false;
+    }
+
+    for (const child of prefsTag.children) {
+      const valueField = valueFields[child.tagId];
+      if (valueField) {
+        result[valueField] = child.humanValue;
+        continue;
+      }
+      const presenceField = presenceFields[child.tagId];
+      if (presenceField) {
+        result[presenceField] = true;
+      }
+    }
+
+    return result;
   }
 }
 

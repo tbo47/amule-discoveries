@@ -152,6 +152,13 @@
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 6px; padding: 6px 10px;
     }
+    .disc-kw-toggle-wrap {
+      display: inline-flex; gap: 6px; align-items: center;
+      font-size: 12px; color: var(--muted); user-select: none;
+    }
+    .disc-kw-toggle-wrap input {
+      margin: 0;
+    }
     .disc-kw-row .kw-label { flex: 1; font-weight: 500; }
     .disc-kw-row select, .disc-add-form select {
       background: var(--bg); color: var(--text);
@@ -247,7 +254,7 @@
 
   <!-- Login (shown until connected) -->
   <div id="loginScreen" class="login-screen">
-    <h1>aMule</h1>
+    <h1>aMule Discoveries</h1>
     <form id="loginForm" class="conn-form" action="#" method="post">
       <input id="host" class="host" placeholder="Host" value="127.0.0.1" />
       <input id="port" type="number" placeholder="Port" value="4712" />
@@ -258,13 +265,13 @@
 
   <!-- Main UI (after login) -->
   <div id="mainApp" class="main-app hidden">
-  <header>
+  <header class="hidden">
     <h1>aMule</h1>
     <button id="disconnectBtn" class="danger">Disconnect</button>
   </header>
 
   <!-- Status bar -->
-  <div class="status-bar">
+  <div class="status-bar hidden">
     <span><span class="status-dot off" id="statusDot"></span><span id="statusText">Disconnected</span></span>
     <span id="speedInfo"></span>
   </div>
@@ -305,10 +312,9 @@
     <!-- Search -->
     <div class="panel" id="panel-search">
       <form id="searchForm" class="search-form" action="#" method="post">
-        <input id="searchQuery" placeholder="Search query…" />
+        <input id="searchQuery" placeholder="Search query..." />
         <select id="searchNetwork">
           <option value="local">Local</option>
-          <option value="global">Global (ed2k)</option>
           <option value="kad">Kad</option>
         </select>
         <button type="submit" id="searchBtn" disabled>Search</button>

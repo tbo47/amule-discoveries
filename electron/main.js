@@ -41,15 +41,13 @@ function mergeCollection(sharedFiles) {
   }
 
   const now = Date.now();
-  const updated = {};
 
   for (const f of sharedFiles) {
-    if (!f.fileHash) continue;
-    updated[f.fileHash] = persisted[f.fileHash] || now;
+    if (f.fileHash) persisted[f.fileHash] = persisted[f.fileHash] || now;
   }
 
-  fs.writeFileSync(COLLECTION_FILE, JSON.stringify(updated), "utf8");
-  return updated;
+  fs.writeFileSync(COLLECTION_FILE, JSON.stringify(persisted), "utf8");
+  return persisted;
 }
 
 function notifyRenderer(channel, payload) {

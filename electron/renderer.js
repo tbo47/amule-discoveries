@@ -501,6 +501,7 @@ searchBody.addEventListener("click", async (e) => {
 // ── Discoveries ──
 
 const INTERVAL_LABELS = { "1h": "Every hour", "6h": "Every 6 hours", "1d": "Every day", "1w": "Every week" };
+let discoveryKeywordVisibility = new Map();
 
 function timeAgo(ts) {
   const diff = Date.now() - ts;
@@ -514,13 +515,30 @@ function timeAgo(ts) {
   return d + "d ago";
 }
 
+function syncDiscoveryKeywordVisibility(keywords) {
+  const nextVisibility = new Map();
+  for (const kw of keywords || []) {
+    nextVisibility.set(kw.label, discoveryKeywordVisibility.get(kw.label) !== false);
+  }
+  discoveryKeywordVisibility = nextVisibility;
+}
+
 function renderDiscoveryKeywords(keywords) {
+  syncDiscoveryKeywordVisibility(keywords);
   if (!keywords || keywords.length === 0) {
     discKeywords.innerHTML = '<p class="muted">No keywords defined. Add one above.</p>';
     return;
   }
   discKeywords.innerHTML = keywords.map((kw) => `
     <div class="disc-kw-row">
+      <label class="disc-kw-toggle-wrap" title="Show results for this keyword">
+        <input
+          type="checkbox"
+          class="disc-kw-toggle"
+          data-label="${escapeAttr(kw.label)}"
+          ${discoveryKeywordVisibility.get(kw.label) !== false ? "checked" : ""}
+        />
+      </label>
       <span class="kw-label">${escapeHtml(kw.label)}</span>
       <select class="disc-kw-interval" data-id="${kw.id}">
         ${Object.entries(INTERVAL_LABELS).map(([v, l]) =>
@@ -537,13 +555,17 @@ let lastDiscoveryResults = [];
 
 function renderDiscoveryResults(results) {
   lastDiscoveryResults = results || [];
-  if (lastDiscoveryResults.length === 0) {
+  const visibleResults = lastDiscoveryResults.filter((r) => discoveryKeywordVisibility.get(r.keyword) !== false);
+  if (visibleResults.length === 0) {
     discBody.innerHTML = "";
+    discEmpty.textContent = lastDiscoveryResults.length === 0
+      ? "No discoveries yet."
+      : "No discoveries for the selected keywords.";
     discEmpty.style.display = "block";
     return;
   }
   discEmpty.style.display = "none";
-  discBody.innerHTML = lastDiscoveryResults.map((r) => {
+  discBody.innerHTML = visibleResults.map((r) => {
     const shared = sharedByHash.get(r.fileHash);
     let actionTd;
     if (shared && shared.path) {
@@ -606,6 +628,13 @@ discKeywords.addEventListener("click", async (e) => {
 });
 
 discKeywords.addEventListener("change", async (e) => {
+  const toggle = e.target.closest(".disc-kw-toggle");
+  if (toggle) {
+    discoveryKeywordVisibility.set(toggle.dataset.label, toggle.checked);
+    renderDiscoveryResults(lastDiscoveryResults);
+    return;
+  }
+
   const sel = e.target.closest(".disc-kw-interval");
   if (!sel) return;
   try {
