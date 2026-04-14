@@ -247,6 +247,54 @@
     }
     .search-kw-tag:hover { border-color: var(--muted); color: var(--text); }
     .search-kw-tag .kw-n { color: var(--muted); font-size: 11px; margin-left: 4px; }
+
+    /* ── Review modal ── */
+    .modal-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.6);
+      z-index: 100;
+      align-items: center; justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 24px;
+      width: 420px; max-width: 95vw;
+      display: flex; flex-direction: column; gap: 16px;
+    }
+    .modal h3 { font-size: 15px; font-weight: 600; }
+    .modal-filename {
+      font-size: 12px; color: var(--muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .star-picker {
+      display: flex; gap: 6px; font-size: 24px;
+      cursor: pointer; user-select: none;
+    }
+    .star-picker .star { color: var(--border); transition: color .1s; }
+    .star-picker .star.active,
+    .star-picker .star:hover,
+    .star-picker .star:hover ~ .star { color: var(--border); }
+    .star-picker .star.active { color: var(--yellow); }
+    .star-picker:hover .star { color: var(--border); }
+    .star-picker:hover .star:hover,
+    .star-picker:hover .star.hover-active { color: var(--yellow); }
+    .modal textarea {
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px; font-size: 13px; resize: vertical;
+      min-height: 80px; font-family: inherit; width: 100%;
+    }
+    .modal textarea:focus { outline: none; border-color: var(--blue); }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .review-cell { white-space: nowrap; }
+    .review-stars { letter-spacing: 1px; color: var(--yellow); font-size: 13px; }
+    .review-stars.empty { color: var(--border); }
+    .review-comment-icon { color: var(--muted); font-size: 11px; margin-left: 4px; }
+    button.review-btn { font-size: 12px; padding: 3px 8px; }
   </style>
 </head>
 <body>
@@ -297,10 +345,11 @@
         <thead id="sharedThead">
           <tr>
             <th style="width:70px">Action</th>
-            <th class="sortable" data-sort="name">File Name<span class="sort-ind" aria-hidden="true"></span></th>
+            <th class="sortable" data-sort="name">File Name<span class="sort-ind" aria-hidden="true"></span><input id="sharedSearch" placeholder="Filter…" style="margin-left:8px;font-size:12px;padding:2px 6px;width:140px;vertical-align:middle" onclick="event.stopPropagation()" /></th>
             <th class="sortable" style="width:120px" data-sort="size">Size<span class="sort-ind" aria-hidden="true"></span></th>
             <th class="sortable" style="width:98px" data-sort="popularity" title="Relative share volume in this list: 5★ = highest upload ratio, 0★ = lowest">Popularity<span class="sort-ind" aria-hidden="true"></span></th>
             <th class="sortable" style="width:100px" data-sort="added" title="When the file was first added to the collection">Added<span class="sort-ind" aria-hidden="true"></span></th>
+            <th class="sortable" style="width:170px" data-sort="rating" title="Your personal rating">My Review<span class="sort-ind" aria-hidden="true"></span></th>
             <th style="width:160px"></th>
           </tr>
         </thead>
@@ -369,6 +418,33 @@
     </div>
 
   </div>
+  </div>
+</div>
+
+<!-- Review modal -->
+<div id="reviewOverlay" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="reviewModalTitle">
+  <div class="modal">
+    <h3 id="reviewModalTitle">My Review</h3>
+    <div id="reviewFileName" class="modal-filename"></div>
+    <div>
+      <div class="muted mb" style="font-size:12px;margin-bottom:6px">Rating</div>
+      <div id="reviewStars" class="star-picker" role="radiogroup" aria-label="Rating">
+        <span class="star" data-value="1" role="radio" aria-label="1 star">★</span>
+        <span class="star" data-value="2" role="radio" aria-label="2 stars">★</span>
+        <span class="star" data-value="3" role="radio" aria-label="3 stars">★</span>
+        <span class="star" data-value="4" role="radio" aria-label="4 stars">★</span>
+        <span class="star" data-value="5" role="radio" aria-label="5 stars">★</span>
+      </div>
+    </div>
+    <div>
+      <div class="muted mb" style="font-size:12px;margin-bottom:6px">Comment</div>
+      <textarea id="reviewComment" placeholder="Add a personal note…" rows="4"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button id="reviewClearBtn">Clear</button>
+      <button id="reviewCancelBtn">Cancel</button>
+      <button id="reviewSaveBtn" class="primary">Save</button>
+    </div>
   </div>
 </div>
 

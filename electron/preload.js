@@ -21,6 +21,7 @@ const channels = [
   "refreshSharedFiles",
   "openFile",
   "deleteFile",
+  "updateFileReview",
   "discoveryGetState",
   "discoveryAddKeyword",
   "discoveryRemoveKeyword",

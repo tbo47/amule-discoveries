@@ -33,9 +33,9 @@ let sharedByHash = new Map();
 
 /** Last fetched My Collection rows (server order); sorting is applied in the UI only. */
 let sharedListCache = [];
-/** @type {{ key: "name"|"size"|"popularity"|"added", dir: "asc"|"desc" }} */
+/** @type {{ key: "name"|"size"|"popularity"|"added"|"rating", dir: "asc"|"desc" }} */
 let sharedSort = { key: "added", dir: "desc" };
-const SHARED_SORT_DEFAULTS = { name: "asc", size: "desc", popularity: "desc", added: "desc" };
+const SHARED_SORT_DEFAULTS = { name: "asc", size: "desc", popularity: "desc", added: "desc", rating: "desc" };
 
 const sharedThead = $("sharedThead");
 
@@ -298,6 +298,9 @@ function sortSharedList(list) {
       case "added":
         c = (Number(a.firstSeen) || 0) - (Number(b.firstSeen) || 0);
         break;
+      case "rating":
+        c = (Number(a.rating) || 0) - (Number(b.rating) || 0);
+        break;
       default:
         return 0;
     }
@@ -324,13 +327,15 @@ function updateSharedHeaderSortIndicators() {
 }
 
 function applySharedSortAndRender() {
-  if (!sharedListCache.length) {
+  const query = ($("sharedSearch")?.value || "").trim().toLowerCase();
+  let list = sharedListCache.slice();
+  if (query) list = list.filter(f => (f.fileName || "").toLowerCase().includes(query));
+  if (!list.length) {
     renderSharedFiles([]);
     updateSharedHeaderSortIndicators();
     return;
   }
-  const sorted = sortSharedList(sharedListCache.slice());
-  renderSharedFiles(sorted);
+  renderSharedFiles(sortSharedList(list));
   updateSharedHeaderSortIndicators();
 }
 
@@ -347,10 +352,17 @@ async function loadSharedFiles() {
     renderSearchPopularKeywords();
   } catch (err) {
     sharedListCache = [];
-    sharedBody.innerHTML = `<tr><td colspan="6" class="error">${escapeHtml(err.message)}</td></tr>`;
+    sharedBody.innerHTML = `<tr><td colspan="7" class="error">${escapeHtml(err.message)}</td></tr>`;
     updateSharedHeaderSortIndicators();
     renderSearchPopularKeywords();
   }
+}
+
+function reviewCell(f) {
+  const r = Number(f.rating) || 0;
+  const stars = r > 0 ? `<span class="review-stars">${"★".repeat(r)}${"☆".repeat(5 - r)}</span>` : `<span class="review-stars empty">☆☆☆☆☆</span>`;
+  const commentIcon = f.comment ? ` <span class="review-comment-icon" title="${escapeAttr(f.comment)}">💬</span>` : "";
+  return `<span class="review-cell">${stars}${commentIcon}</span>`;
 }
 
 function renderSharedFiles(list) {
@@ -360,7 +372,7 @@ function renderSharedFiles(list) {
     return;
   }
   sharedEmpty.style.display = "none";
-  const ratings = starRatingsForList(list);
+  const popRatings = starRatingsForList(list);
   sharedBody.innerHTML = list.map((f, i) => {
     const path = f.path || "";
     const link = f.ed2kLink || ed2kUrl(f);
@@ -368,14 +380,20 @@ function renderSharedFiles(list) {
       <td>${path ? `<button class="shared-play" data-path="${escapeAttr(path)}" data-name="${escapeAttr(f.fileName || "")}" title="Open file">▶ Play</button>` : "—"}</td>
       <td title="${escapeHtml(path)}">${escapeHtml(f.fileName || "?")}</td>
       <td>${formatBytes(f.fileSize)}</td>
-      <td class="muted" style="white-space:nowrap;letter-spacing:1px">${popularityCell(f, ratings[i])}</td>
+      <td class="muted" style="white-space:nowrap;letter-spacing:1px">${popularityCell(f, popRatings[i])}</td>
       <td class="time-ago" title="${f.firstSeen ? new Date(f.firstSeen).toLocaleString() : ""}">${f.firstSeen ? timeAgo(f.firstSeen) : "—"}</td>
+      <td>${reviewCell(f)} <button class="review-btn shared-review" data-hash="${escapeAttr(f.fileHash || "")}" data-name="${escapeAttr(f.fileName || "")}" data-rating="${escapeAttr(String(f.rating || 0))}" data-comment="${escapeAttr(f.comment || "")}" title="Add/edit comment &amp; rating">✏️</button></td>
       <td style="white-space:nowrap">
         <button class="shared-share" data-link="${escapeAttr(link)}" title="Copy ed2k link">Share</button>
         ${path ? `<button class="shared-del danger" data-path="${escapeAttr(path)}" data-name="${escapeAttr(f.fileName || "")}" title="Delete file">Delete</button>` : ""}
       </td>
     </tr>`;
   }).join("");
+}
+
+const sharedSearchInput = $("sharedSearch");
+if (sharedSearchInput) {
+  sharedSearchInput.addEventListener("input", () => applySharedSortAndRender());
 }
 
 if (sharedThead) {
@@ -427,6 +445,12 @@ sharedBody.addEventListener("click", async (e) => {
     } catch (err) {
       alert("Could not delete file:\n" + err.message);
     }
+    return;
+  }
+
+  const rev = e.target.closest(".shared-review");
+  if (rev) {
+    openReviewModal(rev.dataset.hash, rev.dataset.name, Number(rev.dataset.rating) || 0, rev.dataset.comment || "");
   }
 });
 
@@ -438,6 +462,96 @@ refreshSharedBtn.addEventListener("click", async () => {
   }
   await loadSharedFiles();
 });
+
+// ── Review modal ──
+
+const reviewOverlay = $("reviewOverlay");
+const reviewFileName = $("reviewFileName");
+const reviewStars = $("reviewStars");
+const reviewComment = $("reviewComment");
+const reviewSaveBtn = $("reviewSaveBtn");
+const reviewCancelBtn = $("reviewCancelBtn");
+const reviewClearBtn = $("reviewClearBtn");
+
+let reviewCurrentHash = null;
+let reviewCurrentRating = 0;
+
+function setReviewStars(n) {
+  reviewCurrentRating = n;
+  for (const star of reviewStars.querySelectorAll(".star")) {
+    const v = Number(star.dataset.value);
+    star.classList.toggle("active", v <= n);
+  }
+}
+
+function openReviewModal(fileHash, fileName, rating, comment) {
+  reviewCurrentHash = fileHash;
+  reviewFileName.textContent = fileName || fileHash;
+  reviewComment.value = comment || "";
+  setReviewStars(rating || 0);
+  reviewOverlay.classList.add("open");
+  reviewComment.focus();
+}
+
+if (reviewOverlay) {
+  reviewStars.addEventListener("click", (e) => {
+    const star = e.target.closest(".star");
+    if (!star) return;
+    const v = Number(star.dataset.value);
+    setReviewStars(reviewCurrentRating === v ? 0 : v);
+  });
+
+  reviewStars.addEventListener("mouseover", (e) => {
+    const star = e.target.closest(".star");
+    if (!star) return;
+    const v = Number(star.dataset.value);
+    for (const s of reviewStars.querySelectorAll(".star")) {
+      s.classList.toggle("hover-active", Number(s.dataset.value) <= v);
+    }
+  });
+
+  reviewStars.addEventListener("mouseleave", () => {
+    for (const s of reviewStars.querySelectorAll(".star")) s.classList.remove("hover-active");
+  });
+
+  reviewSaveBtn.addEventListener("click", async () => {
+    if (!reviewCurrentHash) return;
+    reviewSaveBtn.disabled = true;
+    try {
+      await call("updateFileReview", {
+        fileHash: reviewCurrentHash,
+        rating: reviewCurrentRating,
+        comment: reviewComment.value,
+      });
+      reviewOverlay.classList.remove("open");
+      await loadSharedFiles();
+    } catch (err) {
+      alert("Could not save review:\n" + err.message);
+    } finally {
+      reviewSaveBtn.disabled = false;
+    }
+  });
+
+  reviewClearBtn.addEventListener("click", async () => {
+    if (!reviewCurrentHash) return;
+    reviewClearBtn.disabled = true;
+    try {
+      await call("updateFileReview", { fileHash: reviewCurrentHash, rating: 0, comment: "" });
+      reviewOverlay.classList.remove("open");
+      await loadSharedFiles();
+    } catch (err) {
+      alert("Could not clear review:\n" + err.message);
+    } finally {
+      reviewClearBtn.disabled = false;
+    }
+  });
+
+  reviewCancelBtn.addEventListener("click", () => reviewOverlay.classList.remove("open"));
+
+  reviewOverlay.addEventListener("click", (e) => {
+    if (e.target === reviewOverlay) reviewOverlay.classList.remove("open");
+  });
+}
 
 // ── Search ──
 

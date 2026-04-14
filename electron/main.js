@@ -33,17 +33,23 @@ function loadCollection() {
   }
 }
 
+/** Return the firstSeen timestamp from a collection entry (handles both old number format and new object format). */
+function entryFirstSeen(val, now) {
+  if (typeof val === "number") return val;
+  if (val && typeof val === "object" && val.firstSeen) return val.firstSeen;
+  return now;
+}
+
 function mergeCollection(sharedFiles) {
   const persisted = loadCollection();
   if (!sharedFiles || sharedFiles.length === 0) {
-    alert("No shared files found.");
     return persisted;
   }
 
   const now = Date.now();
 
   for (const f of sharedFiles) {
-    if (f.fileHash) persisted[f.fileHash] = persisted[f.fileHash] || now;
+    if (f.fileHash && persisted[f.fileHash] == null) persisted[f.fileHash] = now;
   }
 
   fs.writeFileSync(COLLECTION_FILE, JSON.stringify(persisted), "utf8");
@@ -124,12 +130,22 @@ ipc("amule:getSharedFiles", async () => {
   const files = await client.getSharedFiles();
   const downloadQueue = await client.getDownloadQueue();
   const filesWithoutDownloadQueue = files.filter(f => !downloadQueue.some(d => d.fileHash === f.fileHash));
-  const timestamps = mergeCollection(filesWithoutDownloadQueue);
+  const collection = mergeCollection(filesWithoutDownloadQueue);
   for (const f of filesWithoutDownloadQueue) {
-    f.firstSeen = timestamps[f.fileHash] || Date.now();
+    f.firstSeen = entryFirstSeen(collection[f.fileHash], Date.now());
+    f.rating = f.rating ?? 0;
+    f.comment = f.comment ?? "";
   }
   filesWithoutDownloadQueue.sort((a, b) => b.firstSeen - a.firstSeen || (a.fileName || "").localeCompare(b.fileName || ""));
   return filesWithoutDownloadQueue;
+});
+
+ipc("amule:updateFileReview", async ({ fileHash, rating, comment }) => {
+  requireClient();
+  if (!fileHash) throw new Error("fileHash is required.");
+  const safeRating = (rating != null && rating >= 0 && rating <= 5) ? Number(rating) : 0;
+  const safeComment = typeof comment === "string" ? comment.trim() : "";
+  return client.setFileComment(fileHash, safeComment, safeRating);
 });
 
 ipc("amule:searchAndWaitResults", async ({ query, network, extension }) => {
