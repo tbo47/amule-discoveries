@@ -475,6 +475,7 @@ const reviewClearBtn = $("reviewClearBtn");
 
 let reviewCurrentHash = null;
 let reviewCurrentRating = 0;
+let reviewOriginalFileName = "";
 
 function setReviewStars(n) {
   reviewCurrentRating = n;
@@ -486,11 +487,12 @@ function setReviewStars(n) {
 
 function openReviewModal(fileHash, fileName, rating, comment) {
   reviewCurrentHash = fileHash;
-  reviewFileName.textContent = fileName || fileHash;
+  reviewOriginalFileName = fileName || fileHash;
+  reviewFileName.value = reviewOriginalFileName;
   reviewComment.value = comment || "";
   setReviewStars(rating || 0);
   reviewOverlay.classList.add("open");
-  reviewComment.focus();
+  reviewFileName.focus();
 }
 
 if (reviewOverlay) {
@@ -518,6 +520,13 @@ if (reviewOverlay) {
     if (!reviewCurrentHash) return;
     reviewSaveBtn.disabled = true;
     try {
+      const newName = reviewFileName.value.trim();
+      if (newName && newName !== reviewOriginalFileName) {
+        const result = await call("renameFile", { fileHash: reviewCurrentHash, newName });
+        if (result && result.success === false) {
+          throw new Error(result.error || "Rename failed");
+        }
+      }
       await call("updateFileReview", {
         fileHash: reviewCurrentHash,
         rating: reviewCurrentRating,
@@ -526,7 +535,7 @@ if (reviewOverlay) {
       reviewOverlay.classList.remove("open");
       await loadSharedFiles();
     } catch (err) {
-      alert("Could not save review:\n" + err.message);
+      alert("Could not save:\n" + err.message);
     } finally {
       reviewSaveBtn.disabled = false;
     }

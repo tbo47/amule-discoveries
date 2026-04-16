@@ -266,10 +266,16 @@
       display: flex; flex-direction: column; gap: 16px;
     }
     .modal h3 { font-size: 15px; font-weight: 600; }
-    .modal-filename {
-      font-size: 12px; color: var(--muted);
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    .modal-filename-label {
+      font-size: 12px; color: var(--muted); margin-bottom: 4px;
     }
+    .modal-filename-input {
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 5px 8px; font-size: 13px; width: 100%;
+      font-family: inherit;
+    }
+    .modal-filename-input:focus { outline: none; border-color: var(--blue); }
     .star-picker {
       display: flex; gap: 6px; font-size: 24px;
       cursor: pointer; user-select: none;
@@ -425,7 +431,10 @@
 <div id="reviewOverlay" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="reviewModalTitle">
   <div class="modal">
     <h3 id="reviewModalTitle">My Review</h3>
-    <div id="reviewFileName" class="modal-filename"></div>
+    <div>
+      <div class="modal-filename-label">File Name</div>
+      <input id="reviewFileName" class="modal-filename-input" type="text" spellcheck="false" />
+    </div>
     <div>
       <div class="muted mb" style="font-size:12px;margin-bottom:6px">Rating</div>
       <div id="reviewStars" class="star-picker" role="radiogroup" aria-label="Rating">

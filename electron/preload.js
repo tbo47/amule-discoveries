@@ -22,6 +22,7 @@ const channels = [
   "openFile",
   "deleteFile",
   "updateFileReview",
+  "renameFile",
   "discoveryGetState",
   "discoveryAddKeyword",
   "discoveryRemoveKeyword",

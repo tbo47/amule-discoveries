@@ -148,6 +148,13 @@ ipc("amule:updateFileReview", async ({ fileHash, rating, comment }) => {
   return client.setFileComment(fileHash, safeComment, safeRating);
 });
 
+ipc("amule:renameFile", async ({ fileHash, newName }) => {
+  requireClient();
+  if (!fileHash) throw new Error("fileHash is required.");
+  if (!newName || !newName.trim()) throw new Error("newName is required.");
+  return client.renameFile(fileHash, newName.trim());
+});
+
 ipc("amule:searchAndWaitResults", async ({ query, network, extension }) => {
   requireClient();
   return client.searchAndWaitResults(query, network || "global", extension || undefined);
