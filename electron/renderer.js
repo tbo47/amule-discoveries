@@ -30,9 +30,11 @@ const searchPopularTags = $("searchPopularTags");
 
 let connected = false;
 let sharedByHash = new Map();
+let queuedByHash = new Map();
 
 /** Last fetched My Collection rows (server order); sorting is applied in the UI only. */
 let sharedListCache = [];
+let lastSearchResults = [];
 /** @type {{ key: "name"|"size"|"popularity"|"added"|"rating", dir: "asc"|"desc" }} */
 let sharedSort = { key: "added", dir: "desc" };
 const SHARED_SORT_DEFAULTS = { name: "asc", size: "desc", popularity: "desc", added: "desc" };
@@ -67,6 +69,30 @@ function escapeAttr(str) {
 
 function ed2kUrl(r) {
   return `ed2k://|file|${encodeURIComponent(r.fileName || "unknown")}|${r.fileSize || 0}|${r.fileHash}|/`;
+}
+
+function fileHashKey(hash) {
+  return hash ? String(hash).toLowerCase() : "";
+}
+
+function sharedPlayButton(shared, fallbackName = "") {
+  const path = shared?.path || "";
+  const name = shared?.fileName || fallbackName;
+  const disabled = path ? "" : " disabled";
+  const title = path ? "Open file" : "File path unavailable";
+  return `<button class="shared-play" data-path="${escapeAttr(path)}" data-name="${escapeAttr(name)}" title="${escapeAttr(title)}"${disabled}>▶ Play</button>`;
+}
+
+function searchDownloadButton(r) {
+  const hash = r.fileHash || "";
+  const link = r.ed2kLink || (hash ? ed2kUrl(r) : "");
+  const disabled = hash || link ? "" : " disabled";
+  return `<button class="sr-dl" data-hash="${escapeAttr(hash)}" data-link="${escapeAttr(link)}"${disabled}>Download</button>`;
+}
+
+function queuedDownloadButton(download) {
+  const progress = download?.progress != null ? ` (${download.progress}%)` : "";
+  return `<button class="sr-queued" title="Already in download queue" disabled>Queued${escapeHtml(progress)}</button>`;
 }
 
 /** Lifetime upload ÷ file size (aMule transferredTotal / fileSize). */
@@ -342,19 +368,31 @@ function applySharedSortAndRender() {
 
 async function loadSharedFiles() {
   try {
-    const list = await call("getSharedFiles");
+    const [list, queue] = await Promise.all([
+      call("getSharedFiles"),
+      call("getDownloadQueue"),
+    ]);
     sharedListCache = list || [];
     sharedByHash = new Map();
     for (const f of sharedListCache) {
-      if (f.fileHash) sharedByHash.set(f.fileHash, f);
+      const key = fileHashKey(f.fileHash);
+      if (key) sharedByHash.set(key, f);
+    }
+    queuedByHash = new Map();
+    for (const d of queue || []) {
+      const key = fileHashKey(d.fileHash);
+      if (key) queuedByHash.set(key, d);
     }
     applySharedSortAndRender();
     reRenderDiscoveryResults();
+    reRenderSearchResults();
     renderSearchPopularKeywords();
   } catch (err) {
     sharedListCache = [];
+    queuedByHash = new Map();
     sharedBody.innerHTML = `<tr><td colspan="6" class="error">${escapeHtml(err.message)}</td></tr>`;
     updateSharedHeaderSortIndicators();
+    reRenderSearchResults();
     renderSearchPopularKeywords();
   }
 }
@@ -565,25 +603,45 @@ if (reviewOverlay) {
 
 // ── Search ──
 
+function renderSearchResults(results) {
+  searchBody.innerHTML = results.map((r) => {
+    const hashKey = fileHashKey(r.fileHash);
+    const shared = sharedByHash.get(hashKey);
+    const queued = queuedByHash.get(hashKey);
+    const action = shared
+      ? sharedPlayButton(shared, r.fileName || "")
+      : queued
+        ? queuedDownloadButton(queued)
+        : searchDownloadButton(r);
+    return `<tr>
+      <td>${action}</td>
+      <td>${escapeHtml(r.fileName || "?")}</td>
+      <td>${formatBytes(r.fileSize)}</td>
+      <td>${r.sourceCount ?? "—"}</td>
+    </tr>`;
+  }).join("");
+}
+
+function reRenderSearchResults() {
+  if (lastSearchResults.length > 0) renderSearchResults(lastSearchResults);
+}
+
 async function performSearch() {
   const q = searchQuery.value.trim();
   if (!q) return;
   searchBtn.disabled = true;
   searchStatus.textContent = "Searching…";
   searchBody.innerHTML = "";
+  lastSearchResults = [];
   try {
     const res = await call("searchAndWaitResults", {
       query: q,
       network: searchNetwork.value,
     });
     const results = res?.results || [];
+    lastSearchResults = results;
     searchStatus.textContent = `${results.length} result(s).`;
-    searchBody.innerHTML = results.map((r) => `<tr>
-      <td><button class="sr-dl" data-link="${escapeAttr(r.ed2kLink || ed2kUrl(r))}">Download</button></td>
-      <td>${escapeHtml(r.fileName || "?")}</td>
-      <td>${formatBytes(r.fileSize)}</td>
-      <td>${r.sourceCount ?? "—"}</td>
-    </tr>`).join("");
+    renderSearchResults(results);
   } catch (err) {
     searchStatus.textContent = "";
     searchBody.innerHTML = `<tr><td colspan="4" class="error">${escapeHtml(err.message)}</td></tr>`;
@@ -611,12 +669,32 @@ if (searchForm) {
 }
 
 searchBody.addEventListener("click", async (e) => {
+  const play = e.target.closest(".shared-play");
+  if (play) {
+    try {
+      await call("openFile", { filePath: play.dataset.path, fileName: play.dataset.name });
+    } catch (err) {
+      alert("Could not open file:\n" + err.message);
+    }
+    return;
+  }
+
   const btn = e.target.closest(".sr-dl");
   if (!btn) return;
   try {
-    await call("addEd2kLink", { link: btn.dataset.link, categoryId: 0 });
-    btn.textContent = "Added";
-    btn.disabled = true;
+    if (btn.dataset.hash) {
+      const ok = await call("downloadSearchResult", { fileHash: btn.dataset.hash, categoryId: 0 });
+      if (ok !== true) throw new Error("aMule did not accept the search result download.");
+    } else {
+      await call("addEd2kLink", { link: btn.dataset.link, categoryId: 0 });
+    }
+    if (btn.dataset.hash) queuedByHash.set(fileHashKey(btn.dataset.hash), { fileHash: btn.dataset.hash });
+    if (btn.dataset.hash) {
+      reRenderSearchResults();
+    } else {
+      btn.textContent = "Added";
+      btn.disabled = true;
+    }
   } catch (err) {
     alert(err.message);
   }
@@ -714,7 +792,7 @@ function renderDiscoveryResults(results, options = {}) {
   const pageResults = visibleResults.slice(pageStart, pageStart + DISCOVERY_PAGE_SIZE);
   renderDiscoveryPagination(visibleResults.length);
   discBody.innerHTML = pageResults.map((r) => {
-    const shared = sharedByHash.get(r.fileHash);
+    const shared = sharedByHash.get(fileHashKey(r.fileHash));
     let actionTd;
     if (shared && shared.path) {
       actionTd = `<button class="shared-play" data-path="${escapeAttr(shared.path)}" data-name="${escapeAttr(shared.fileName || "")}" title="Open file">▶ Play</button>`;
