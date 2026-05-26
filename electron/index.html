@@ -177,6 +177,11 @@
       font-size: 12px; color: var(--muted); margin-bottom: 8px;
       max-height: 48px; overflow: auto;
     }
+    .pagination {
+      display: flex; gap: 8px; align-items: center;
+      margin-bottom: 8px; font-size: 12px; color: var(--muted);
+    }
+    .pagination .page-status { min-width: 180px; }
     .tag {
       display: inline-block; background: var(--surface);
       border: 1px solid var(--border); border-radius: 4px;
@@ -262,7 +267,7 @@
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 24px;
-      width: 420px; max-width: 95vw;
+      width: 600px; max-width: 95vw;
       display: flex; flex-direction: column; gap: 16px;
     }
     .modal h3 { font-size: 15px; font-weight: 600; }
@@ -296,10 +301,6 @@
     }
     .modal textarea:focus { outline: none; border-color: var(--blue); }
     .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
-    .review-cell { white-space: nowrap; }
-    .review-stars { letter-spacing: 1px; color: var(--yellow); font-size: 13px; }
-    .review-stars.empty { color: var(--border); }
-    .review-comment-icon { color: var(--muted); font-size: 11px; margin-left: 4px; }
     button.review-btn { font-size: 12px; padding: 3px 8px; }
   </style>
 </head>
@@ -355,7 +356,6 @@
             <th class="sortable" style="width:120px" data-sort="size">Size<span class="sort-ind" aria-hidden="true"></span></th>
             <th class="sortable" style="width:98px" data-sort="popularity" title="Relative share volume in this list: 5★ = highest upload ratio, 0★ = lowest">Popularity<span class="sort-ind" aria-hidden="true"></span></th>
             <th class="sortable" style="width:100px" data-sort="added" title="When the file was first added to the collection">Added<span class="sort-ind" aria-hidden="true"></span></th>
-            <th class="sortable" style="width:170px" data-sort="rating" title="Your personal rating">My Review<span class="sort-ind" aria-hidden="true"></span></th>
             <th style="width:160px"></th>
           </tr>
         </thead>
@@ -407,6 +407,11 @@
       </div>
       <div class="disc-keywords" id="discKeywords"></div>
       <div class="disc-log" id="discLog"></div>
+      <div class="pagination" id="discPagination" style="display:none">
+        <button id="discPrevPage" type="button">Previous</button>
+        <span id="discPageStatus" class="page-status"></span>
+        <button id="discNextPage" type="button">Next</button>
+      </div>
       <table>
         <thead>
           <tr>
@@ -428,9 +433,8 @@
 </div>
 
 <!-- Review modal -->
-<div id="reviewOverlay" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="reviewModalTitle">
+<div id="reviewOverlay" class="modal-overlay" role="dialog" aria-modal="true">
   <div class="modal">
-    <h3 id="reviewModalTitle">My Review</h3>
     <div>
       <div class="modal-filename-label">File Name</div>
       <input id="reviewFileName" class="modal-filename-input" type="text" spellcheck="false" />

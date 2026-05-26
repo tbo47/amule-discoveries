@@ -35,7 +35,7 @@ let sharedByHash = new Map();
 let sharedListCache = [];
 /** @type {{ key: "name"|"size"|"popularity"|"added"|"rating", dir: "asc"|"desc" }} */
 let sharedSort = { key: "added", dir: "desc" };
-const SHARED_SORT_DEFAULTS = { name: "asc", size: "desc", popularity: "desc", added: "desc", rating: "desc" };
+const SHARED_SORT_DEFAULTS = { name: "asc", size: "desc", popularity: "desc", added: "desc" };
 
 const sharedThead = $("sharedThead");
 
@@ -192,6 +192,10 @@ const discKeywords      = $("discKeywords");
 const discBody          = $("discBody");
 const discEmpty         = $("discEmpty");
 const discLog           = $("discLog");
+const discPagination    = $("discPagination");
+const discPrevPage      = $("discPrevPage");
+const discNextPage      = $("discNextPage");
+const discPageStatus    = $("discPageStatus");
 
 let sharedTimer = null;
 
@@ -298,9 +302,6 @@ function sortSharedList(list) {
       case "added":
         c = (Number(a.firstSeen) || 0) - (Number(b.firstSeen) || 0);
         break;
-      case "rating":
-        c = (Number(a.rating) || 0) - (Number(b.rating) || 0);
-        break;
       default:
         return 0;
     }
@@ -352,18 +353,12 @@ async function loadSharedFiles() {
     renderSearchPopularKeywords();
   } catch (err) {
     sharedListCache = [];
-    sharedBody.innerHTML = `<tr><td colspan="7" class="error">${escapeHtml(err.message)}</td></tr>`;
+    sharedBody.innerHTML = `<tr><td colspan="6" class="error">${escapeHtml(err.message)}</td></tr>`;
     updateSharedHeaderSortIndicators();
     renderSearchPopularKeywords();
   }
 }
 
-function reviewCell(f) {
-  const r = Number(f.rating) || 0;
-  const stars = r > 0 ? `<span class="review-stars">${"★".repeat(r)}${"☆".repeat(5 - r)}</span>` : `<span class="review-stars empty">☆☆☆☆☆</span>`;
-  const commentIcon = f.comment ? ` <span class="review-comment-icon" title="${escapeAttr(f.comment)}">💬</span>` : "";
-  return `<span class="review-cell">${stars}${commentIcon}</span>`;
-}
 
 function renderSharedFiles(list) {
   if (!list || list.length === 0) {
@@ -382,8 +377,8 @@ function renderSharedFiles(list) {
       <td>${formatBytes(f.fileSize)}</td>
       <td class="muted" style="white-space:nowrap;letter-spacing:1px">${popularityCell(f, popRatings[i])}</td>
       <td class="time-ago" title="${f.firstSeen ? new Date(f.firstSeen).toLocaleString() : ""}">${f.firstSeen ? timeAgo(f.firstSeen) : "—"}</td>
-      <td>${reviewCell(f)} <button class="review-btn shared-review" data-hash="${escapeAttr(f.fileHash || "")}" data-name="${escapeAttr(f.fileName || "")}" data-rating="${escapeAttr(String(f.rating || 0))}" data-comment="${escapeAttr(f.comment || "")}" title="Add/edit comment &amp; rating">✏️</button></td>
       <td style="white-space:nowrap">
+        <button class="review-btn shared-review" data-hash="${escapeAttr(f.fileHash || "")}" data-name="${escapeAttr(f.fileName || "")}" data-rating="${escapeAttr(String(f.rating || 0))}" data-comment="${escapeAttr(f.comment || "")}" title="Edit name &amp; review">✏️</button>
         <button class="shared-share" data-link="${escapeAttr(link)}" title="Copy ed2k link">Share</button>
         ${path ? `<button class="shared-del danger" data-path="${escapeAttr(path)}" data-name="${escapeAttr(f.fileName || "")}" title="Delete file">Delete</button>` : ""}
       </td>
@@ -560,6 +555,12 @@ if (reviewOverlay) {
   reviewOverlay.addEventListener("click", (e) => {
     if (e.target === reviewOverlay) reviewOverlay.classList.remove("open");
   });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && reviewOverlay.classList.contains("open")) {
+      reviewOverlay.classList.remove("open");
+    }
+  });
 }
 
 // ── Search ──
@@ -624,7 +625,9 @@ searchBody.addEventListener("click", async (e) => {
 // ── Discoveries ──
 
 const INTERVAL_LABELS = { "1h": "Every hour", "6h": "Every 6 hours", "1d": "Every day", "1w": "Every week" };
+const DISCOVERY_PAGE_SIZE = 100;
 let discoveryKeywordVisibility = new Map();
+let discoveryPage = 1;
 
 function timeAgo(ts) {
   const diff = Date.now() - ts;
@@ -676,8 +679,24 @@ function renderDiscoveryKeywords(keywords) {
 
 let lastDiscoveryResults = [];
 
-function renderDiscoveryResults(results) {
+function renderDiscoveryPagination(totalVisible) {
+  if (!discPagination) return;
+  if (totalVisible === 0) {
+    discPagination.style.display = "none";
+    return;
+  }
+  const pageCount = Math.max(1, Math.ceil(totalVisible / DISCOVERY_PAGE_SIZE));
+  const start = (discoveryPage - 1) * DISCOVERY_PAGE_SIZE + 1;
+  const end = Math.min(start + DISCOVERY_PAGE_SIZE - 1, totalVisible);
+  discPagination.style.display = "flex";
+  discPrevPage.disabled = discoveryPage <= 1;
+  discNextPage.disabled = discoveryPage >= pageCount;
+  discPageStatus.textContent = `Showing ${start}-${end} of ${totalVisible} · Page ${discoveryPage} of ${pageCount}`;
+}
+
+function renderDiscoveryResults(results, options = {}) {
   lastDiscoveryResults = results || [];
+  if (options.resetPage) discoveryPage = 1;
   const visibleResults = lastDiscoveryResults.filter((r) => discoveryKeywordVisibility.get(r.keyword) !== false);
   if (visibleResults.length === 0) {
     discBody.innerHTML = "";
@@ -685,10 +704,16 @@ function renderDiscoveryResults(results) {
       ? "No discoveries yet."
       : "No discoveries for the selected keywords.";
     discEmpty.style.display = "block";
+    renderDiscoveryPagination(0);
     return;
   }
   discEmpty.style.display = "none";
-  discBody.innerHTML = visibleResults.map((r) => {
+  const pageCount = Math.max(1, Math.ceil(visibleResults.length / DISCOVERY_PAGE_SIZE));
+  discoveryPage = Math.min(Math.max(discoveryPage, 1), pageCount);
+  const pageStart = (discoveryPage - 1) * DISCOVERY_PAGE_SIZE;
+  const pageResults = visibleResults.slice(pageStart, pageStart + DISCOVERY_PAGE_SIZE);
+  renderDiscoveryPagination(visibleResults.length);
+  discBody.innerHTML = pageResults.map((r) => {
     const shared = sharedByHash.get(r.fileHash);
     let actionTd;
     if (shared && shared.path) {
@@ -731,7 +756,7 @@ discAddBtn.addEventListener("click", async () => {
     });
     discKeywordInput.value = "";
     renderDiscoveryKeywords(data.keywords);
-    renderDiscoveryResults(data.results);
+    renderDiscoveryResults(data.results, { resetPage: true });
   } catch (err) {
     alert(err.message);
   }
@@ -744,7 +769,7 @@ discKeywords.addEventListener("click", async (e) => {
     try {
       const data = await call("discoveryRemoveKeyword", { id: del.dataset.id });
       renderDiscoveryKeywords(data.keywords);
-      renderDiscoveryResults(data.results);
+      renderDiscoveryResults(data.results, { resetPage: true });
     } catch (err) { alert(err.message); }
     return;
   }
@@ -754,7 +779,7 @@ discKeywords.addEventListener("change", async (e) => {
   const toggle = e.target.closest(".disc-kw-toggle");
   if (toggle) {
     discoveryKeywordVisibility.set(toggle.dataset.label, toggle.checked);
-    renderDiscoveryResults(lastDiscoveryResults);
+    renderDiscoveryResults(lastDiscoveryResults, { resetPage: true });
     return;
   }
 
@@ -768,6 +793,21 @@ discKeywords.addEventListener("change", async (e) => {
     renderDiscoveryKeywords(data.keywords);
   } catch (err) { alert(err.message); }
 });
+
+if (discPrevPage) {
+  discPrevPage.addEventListener("click", () => {
+    if (discoveryPage <= 1) return;
+    discoveryPage -= 1;
+    renderDiscoveryResults(lastDiscoveryResults);
+  });
+}
+
+if (discNextPage) {
+  discNextPage.addEventListener("click", () => {
+    discoveryPage += 1;
+    renderDiscoveryResults(lastDiscoveryResults);
+  });
+}
 
 discRunNowBtn.addEventListener("click", async () => {
   try {
