@@ -67,6 +67,15 @@ function escapeAttr(str) {
   return String(str).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function displayFileName(name) {
+  return String(name || "?")
+    .replaceAll("A\u0303\u00a9", "\u00e9")
+    .replaceAll("A\u0303\u00a8", "\u00e8")
+    .replaceAll("A\u0303\u00b4", "o")
+    .replaceAll("A\u0303\u00aa", "e")
+    .replaceAll("A\u0303\u00a7", "c");
+}
+
 function ed2kUrl(r) {
   return `ed2k://|file|${encodeURIComponent(r.fileName || "unknown")}|${r.fileSize || 0}|${r.fileHash}|/`;
 }
@@ -90,9 +99,18 @@ function searchDownloadButton(r) {
   return `<button class="sr-dl" data-hash="${escapeAttr(hash)}" data-link="${escapeAttr(link)}"${disabled}>Download</button>`;
 }
 
-function queuedDownloadButton(download) {
+function discoveryDownloadButton(r) {
+  const hash = r.fileHash || "";
+  const link = r.ed2kLink || (hash ? ed2kUrl(r) : "");
+  const disabled = hash || link ? "" : " disabled";
+  return `<button class="disc-dl" data-hash="${escapeAttr(hash)}" data-link="${escapeAttr(link)}"${disabled}>Download</button>`;
+}
+
+function queuedDownloadButton(download, options = {}) {
+  const label = options.label || "Queued";
+  const className = options.className || "sr-queued";
   const progress = download?.progress != null ? ` (${download.progress}%)` : "";
-  return `<button class="sr-queued" title="Already in download queue" disabled>Queued${escapeHtml(progress)}</button>`;
+  return `<button class="${escapeAttr(className)}" title="Already in download queue" disabled>${escapeHtml(label)}${escapeHtml(progress)}</button>`;
 }
 
 /** Lifetime upload ÷ file size (aMule transferredTotal / fileSize). */
@@ -222,6 +240,7 @@ const discPagination    = $("discPagination");
 const discPrevPage      = $("discPrevPage");
 const discNextPage      = $("discNextPage");
 const discPageStatus    = $("discPageStatus");
+const discSearchInput   = $("discSearch");
 
 let sharedTimer = null;
 
@@ -615,7 +634,7 @@ function renderSearchResults(results) {
         : searchDownloadButton(r);
     return `<tr>
       <td>${action}</td>
-      <td>${escapeHtml(r.fileName || "?")}</td>
+      <td>${escapeHtml(displayFileName(r.fileName))}</td>
       <td>${formatBytes(r.fileSize)}</td>
       <td>${r.sourceCount ?? "—"}</td>
     </tr>`;
@@ -775,12 +794,18 @@ function renderDiscoveryPagination(totalVisible) {
 function renderDiscoveryResults(results, options = {}) {
   lastDiscoveryResults = results || [];
   if (options.resetPage) discoveryPage = 1;
-  const visibleResults = lastDiscoveryResults.filter((r) => discoveryKeywordVisibility.get(r.keyword) !== false);
+  const query = (discSearchInput?.value || "").trim().toLowerCase();
+  const visibleResults = lastDiscoveryResults.filter((r) => {
+    if (discoveryKeywordVisibility.get(r.keyword) === false) return false;
+    return !query || (r.fileName || "").toLowerCase().includes(query);
+  });
   if (visibleResults.length === 0) {
     discBody.innerHTML = "";
     discEmpty.textContent = lastDiscoveryResults.length === 0
       ? "No discoveries yet."
-      : "No discoveries for the selected keywords.";
+      : query
+        ? "No discoveries match the current filter."
+        : "No discoveries for the selected keywords.";
     discEmpty.style.display = "block";
     renderDiscoveryPagination(0);
     return;
@@ -792,16 +817,20 @@ function renderDiscoveryResults(results, options = {}) {
   const pageResults = visibleResults.slice(pageStart, pageStart + DISCOVERY_PAGE_SIZE);
   renderDiscoveryPagination(visibleResults.length);
   discBody.innerHTML = pageResults.map((r) => {
-    const shared = sharedByHash.get(fileHashKey(r.fileHash));
+    const hashKey = fileHashKey(r.fileHash);
+    const shared = sharedByHash.get(hashKey);
+    const queued = queuedByHash.get(hashKey);
     let actionTd;
     if (shared && shared.path) {
       actionTd = `<button class="shared-play" data-path="${escapeAttr(shared.path)}" data-name="${escapeAttr(shared.fileName || "")}" title="Open file">▶ Play</button>`;
+    } else if (queued) {
+      actionTd = queuedDownloadButton(queued, { label: "Downloading", className: "disc-queued" });
     } else {
-      actionTd = `<button class="disc-dl" data-link="${escapeAttr(ed2kUrl(r))}">Download</button>`;
+      actionTd = discoveryDownloadButton(r);
     }
     return `<tr>
     <td>${actionTd}</td>
-    <td title="${escapeHtml(r.fileHash || "")}">${escapeHtml(r.fileName || "?")}</td>
+    <td title="${escapeHtml(r.fileHash || "")}">${escapeHtml(displayFileName(r.fileName))}</td>
     <td>${formatBytes(r.fileSize)}</td>
     <td>${r.sourceCount ?? "—"}</td>
     <td title="${escapeHtml(r.keyword)}"><span class="tag">${escapeHtml(r.keyword.length > 8 ? r.keyword.slice(0, 8) + "…" : r.keyword)}</span></td>
@@ -887,6 +916,12 @@ if (discNextPage) {
   });
 }
 
+if (discSearchInput) {
+  discSearchInput.addEventListener("input", () => {
+    renderDiscoveryResults(lastDiscoveryResults, { resetPage: true });
+  });
+}
+
 discRunNowBtn.addEventListener("click", async () => {
   try {
     discLog.textContent = "Starting discovery scan…";
@@ -911,8 +946,13 @@ discBody.addEventListener("click", async (e) => {
   if (!btn) return;
   try {
     await call("addEd2kLink", { link: btn.dataset.link, categoryId: 0 });
-    btn.textContent = "Added";
-    btn.disabled = true;
+    if (btn.dataset.hash) {
+      queuedByHash.set(fileHashKey(btn.dataset.hash), { fileHash: btn.dataset.hash });
+      reRenderDiscoveryResults();
+    } else {
+      btn.textContent = "Downloading";
+      btn.disabled = true;
+    }
   } catch (err) { alert(err.message); }
 });
 
