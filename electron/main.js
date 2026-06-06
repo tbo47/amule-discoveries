@@ -215,6 +215,13 @@ const VLC_PATHS = {
   linux: ["/usr/bin/vlc", "/snap/bin/vlc", "/usr/bin/cvlc"],
 };
 
+const AUDIO_VIDEO_EXTENSIONS = new Set([
+  ".3gp", ".aac", ".aif", ".aiff", ".ape", ".asf", ".avi", ".flac",
+  ".flv", ".m4a", ".m4v", ".mka", ".mkv", ".mov", ".mp3", ".mp4",
+  ".mpeg", ".mpg", ".ogg", ".ogm", ".ogv", ".opus", ".ts", ".vob",
+  ".wav", ".webm", ".wma", ".wmv",
+]);
+
 function findVlc() {
   const candidates = VLC_PATHS[process.platform] || [];
   for (const p of candidates) {
@@ -223,12 +230,32 @@ function findVlc() {
   return null;
 }
 
+function isAudioVideoFile(filePath) {
+  return AUDIO_VIDEO_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+async function openWithOperatingSystem(filePath) {
+  if (process.platform === "darwin") {
+    await new Promise((resolve, reject) => {
+      execFile("open", [filePath], (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    return true;
+  }
+
+  const result = await shell.openPath(filePath);
+  if (result) throw new Error(result);
+  return true;
+}
+
 ipc("amule:openFile", async ({ filePath, fileName }) => {
   if (!filePath) throw new Error("No file path provided.");
 
   const fullPath = fileName ? path.join(filePath, fileName) : filePath;
 
-  const vlc = findVlc();
+  const vlc = isAudioVideoFile(fullPath) ? findVlc() : null;
   if (vlc) {
     console.log(`[VLC] ${vlc} ${JSON.stringify(fullPath)}`);
     return new Promise((resolve, reject) => {
@@ -240,9 +267,7 @@ ipc("amule:openFile", async ({ filePath, fileName }) => {
     });
   }
 
-  const result = await shell.openPath(fullPath);
-  if (result) throw new Error(result);
-  return true;
+  return openWithOperatingSystem(fullPath);
 });
 
 ipc("amule:deleteFile", async ({ filePath, fileName }) => {
