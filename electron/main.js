@@ -143,9 +143,9 @@ ipc("amule:getSharedFiles", async () => {
 ipc("amule:updateFileReview", async ({ fileHash, rating, comment }) => {
   requireClient();
   if (!fileHash) throw new Error("fileHash is required.");
-  const safeRating = (rating != null && rating >= 0 && rating <= 5) ? Number(rating) : 0;
+  const safeRating = (rating != null && rating >= 0 && rating <= 5) ? Math.round(Number(rating)) : 0;
   const safeComment = typeof comment === "string" ? comment.trim() : "";
-  return client.setFileComment(fileHash, safeComment, safeRating);
+  return client.setFileRatingComment(fileHash, safeComment, safeRating);
 });
 
 ipc("amule:renameFile", async ({ fileHash, newName }) => {
@@ -304,6 +304,69 @@ ipc("amule:discoveryUpdateKeyword", async ({ id, label, interval }) => {
 ipc("amule:discoveryRunNow", async () => {
   requireClient();
   discoveries.runNow(() => client, notifyRenderer);
+  return true;
+});
+
+// ── Peer shared files (ephemeral, never persisted) ──
+
+let peerScanRunning = false;
+
+// Ask every currently-known client (download sources, upload/queue peers,
+// friends) for its shared file list over ed2k, using
+// AmuleClient.getClientSharedFiles(). aMule delivers each peer's answer into
+// the shared search-result pool without tagging it by peer, so we snapshot the
+// existing result hashes first and attribute only the *newly appeared* files to
+// the peer we just queried. Results are streamed to the renderer and nothing is
+// written to disk.
+ipc("amule:scanPeerSharedFiles", async () => {
+  requireClient();
+  if (peerScanRunning) throw new Error("A peer scan is already running.");
+  peerScanRunning = true;
+
+  const cl = client;
+
+  (async () => {
+    try {
+      const update = await cl.getUpdate();
+      const clients = (update.clients || []).filter((c) => Number.isInteger(c.ecid));
+      notifyRenderer("peers:started", { total: clients.length });
+
+      // Snapshot existing search-result hashes so already-present files are not
+      // mis-attributed to the first peer we query.
+      const seen = new Set();
+      try {
+        const initial = await cl.getSearchResults();
+        for (const r of initial.results || []) if (r.fileHash) seen.add(r.fileHash);
+      } catch (_) { /* ignore */ }
+
+      for (let i = 0; i < clients.length; i++) {
+        const c = clients[i];
+        const peer = {
+          ecid: c.ecid,
+          userName: c.userName || "",
+          ip: c.ip || "",
+          software: c.softwareVersion || c.software || "",
+          files: [],
+        };
+        try {
+          const res = await cl.getClientSharedFiles(c.ecid, { timeoutMs: 10_000, intervalMs: 1_000 });
+          const fresh = (res.results || []).filter((r) => r.fileHash && !seen.has(r.fileHash));
+          for (const r of fresh) seen.add(r.fileHash);
+          peer.files = fresh;
+        } catch (err) {
+          peer.error = err?.message || String(err);
+        }
+        notifyRenderer("peers:peer", { index: i + 1, total: clients.length, peer });
+      }
+
+      notifyRenderer("peers:done", { total: clients.length });
+    } catch (err) {
+      notifyRenderer("peers:error", { error: err?.message || String(err) });
+    } finally {
+      peerScanRunning = false;
+    }
+  })();
+
   return true;
 });
 

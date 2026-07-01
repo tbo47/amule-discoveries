@@ -336,6 +336,7 @@
     <div class="tab active" data-tab="shared">My Collection</div>
     <div class="tab" data-tab="search">Search</div>
     <div class="tab" data-tab="discoveries">Discoveries</div>
+    <div class="tab" data-tab="peers">Peer Files</div>
   </div>
 
   <!-- Panels -->
@@ -426,6 +427,31 @@
         <tbody id="discBody"></tbody>
       </table>
       <p class="muted mb" id="discEmpty" style="display:none">No discoveries yet.</p>
+    </div>
+
+    <!-- Peer Files -->
+    <div class="panel" id="panel-peers">
+      <div class="flex-gap mb">
+        <button id="peerScanBtn" disabled>Scan Known Peers</button>
+        <span class="muted" id="peerStatus"></span>
+      </div>
+      <p class="muted mb" style="font-size:12px">
+        Asks every currently-known client (download sources &amp; upload/queue peers) for its
+        shared file list over ed2k. Results are live only and never saved.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:80px">Action</th>
+            <th>File Name<input id="peerSearch" placeholder="Filter…" style="margin-left:8px;font-size:12px;padding:2px 6px;width:140px;vertical-align:middle" /></th>
+            <th style="width:120px">Size</th>
+            <th style="width:80px">Sources</th>
+            <th style="width:200px">Peer</th>
+          </tr>
+        </thead>
+        <tbody id="peerBody"></tbody>
+      </table>
+      <p class="muted mb" id="peerEmpty" style="display:none">No peer files yet. Click “Scan Known Peers”.</p>
     </div>
 
   </div>

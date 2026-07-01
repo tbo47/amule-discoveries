@@ -106,6 +106,13 @@ function discoveryDownloadButton(r) {
   return `<button class="disc-dl" data-hash="${escapeAttr(hash)}" data-link="${escapeAttr(link)}"${disabled}>Download</button>`;
 }
 
+function peerDownloadButton(r) {
+  const hash = r.fileHash || "";
+  const link = r.ed2kLink || (hash ? ed2kUrl(r) : "");
+  const disabled = hash || link ? "" : " disabled";
+  return `<button class="peer-dl" data-hash="${escapeAttr(hash)}" data-link="${escapeAttr(link)}"${disabled}>Download</button>`;
+}
+
 function queuedDownloadButton(download, options = {}) {
   const label = options.label || "Queued";
   const className = options.className || "sr-queued";
@@ -242,6 +249,12 @@ const discNextPage      = $("discNextPage");
 const discPageStatus    = $("discPageStatus");
 const discSearchInput   = $("discSearch");
 
+const peerScanBtn       = $("peerScanBtn");
+const peerStatus        = $("peerStatus");
+const peerBody          = $("peerBody");
+const peerEmpty         = $("peerEmpty");
+const peerSearchInput   = $("peerSearch");
+
 let sharedTimer = null;
 
 function setLoginUiVisible(loggedIn) {
@@ -257,7 +270,7 @@ async function setConnected(val) {
   connectBtn.disabled = val;
   disconnectBtn.disabled = !val;
 
-  const actionBtns = [addLinkBtn, refreshSharedBtn, searchBtn, discRunNowBtn];
+  const actionBtns = [addLinkBtn, refreshSharedBtn, searchBtn, discRunNowBtn, peerScanBtn];
   for (const b of actionBtns) b.disabled = !val;
 
   if (!val) speedInfo.textContent = "";
@@ -968,6 +981,122 @@ window.amule.onDiscovery((msg) => {
 
 // Load discovery state on startup (keywords persist across sessions)
 loadDiscoveries();
+
+// ── Peer Files (ephemeral) ──
+
+/** Flat list of { ...file, peerName, peerIp, ecid }. Never persisted. */
+let peerResults = [];
+
+function renderPeerResults() {
+  const query = (peerSearchInput?.value || "").trim().toLowerCase();
+  const list = query
+    ? peerResults.filter((r) => (r.fileName || "").toLowerCase().includes(query))
+    : peerResults;
+
+  if (list.length === 0) {
+    peerBody.innerHTML = "";
+    peerEmpty.textContent = peerResults.length === 0
+      ? "No peer files yet. Click “Scan Known Peers”."
+      : "No peer files match the current filter.";
+    peerEmpty.style.display = "block";
+    return;
+  }
+  peerEmpty.style.display = "none";
+  peerBody.innerHTML = list.map((r) => {
+    const hashKey = fileHashKey(r.fileHash);
+    const shared = sharedByHash.get(hashKey);
+    const queued = queuedByHash.get(hashKey);
+    let actionTd;
+    if (shared && shared.path) {
+      actionTd = `<button class="shared-play" data-path="${escapeAttr(shared.path)}" data-name="${escapeAttr(shared.fileName || "")}" title="Open file">▶ Play</button>`;
+    } else if (queued) {
+      actionTd = queuedDownloadButton(queued, { label: "Downloading", className: "peer-queued" });
+    } else {
+      actionTd = peerDownloadButton(r);
+    }
+    const peerLabel = r.peerName || r.peerIp || ("#" + r.ecid);
+    const peerTitle = [r.peerName, r.peerIp && `IP ${r.peerIp}`, `ecid ${r.ecid}`].filter(Boolean).join(" · ");
+    return `<tr>
+    <td>${actionTd}</td>
+    <td title="${escapeHtml(r.fileHash || "")}">${escapeHtml(displayFileName(r.fileName))}</td>
+    <td>${formatBytes(r.fileSize)}</td>
+    <td>${r.sourceCount ?? "—"}</td>
+    <td title="${escapeAttr(peerTitle)}"><span class="tag">${escapeHtml(peerLabel.length > 22 ? peerLabel.slice(0, 22) + "…" : peerLabel)}</span></td>
+  </tr>`;
+  }).join("");
+}
+
+if (peerScanBtn) {
+  peerScanBtn.addEventListener("click", async () => {
+    try {
+      peerStatus.textContent = "Starting…";
+      peerScanBtn.disabled = true;
+      await call("scanPeerSharedFiles");
+    } catch (err) {
+      peerStatus.textContent = "Error: " + err.message;
+      peerScanBtn.disabled = !connected;
+    }
+  });
+}
+
+if (peerSearchInput) {
+  peerSearchInput.addEventListener("input", () => renderPeerResults());
+}
+
+if (peerBody) {
+  peerBody.addEventListener("click", async (e) => {
+    const play = e.target.closest(".shared-play");
+    if (play) {
+      try {
+        await call("openFile", { filePath: play.dataset.path, fileName: play.dataset.name });
+      } catch (err) {
+        alert("Could not open file:\n" + err.message);
+      }
+      return;
+    }
+
+    const btn = e.target.closest(".peer-dl");
+    if (!btn) return;
+    try {
+      if (btn.dataset.hash) {
+        const ok = await call("downloadSearchResult", { fileHash: btn.dataset.hash, categoryId: 0 });
+        if (ok !== true) throw new Error("aMule did not accept the download.");
+        queuedByHash.set(fileHashKey(btn.dataset.hash), { fileHash: btn.dataset.hash });
+        renderPeerResults();
+      } else {
+        await call("addEd2kLink", { link: btn.dataset.link, categoryId: 0 });
+        btn.textContent = "Downloading";
+        btn.disabled = true;
+      }
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+}
+
+window.amule.onPeers((msg) => {
+  if (msg.type === "started") {
+    peerResults = [];
+    renderPeerResults();
+    peerStatus.textContent = msg.total > 0
+      ? `Scanning ${msg.total} peer(s)…`
+      : "No known peers to scan.";
+    peerScanBtn.disabled = true;
+  } else if (msg.type === "peer") {
+    const p = msg.peer;
+    for (const f of p.files || []) {
+      peerResults.push({ ...f, peerName: p.userName, peerIp: p.ip, ecid: p.ecid });
+    }
+    peerStatus.textContent = `Scanned ${msg.index}/${msg.total} peer(s) — ${peerResults.length} file(s) found…`;
+    renderPeerResults();
+  } else if (msg.type === "done") {
+    peerStatus.textContent = `Done. ${peerResults.length} file(s) from ${msg.total} peer(s).`;
+    peerScanBtn.disabled = !connected;
+  } else if (msg.type === "error") {
+    peerStatus.textContent = "Error: " + msg.error;
+    peerScanBtn.disabled = !connected;
+  }
+});
 
 // ── Init ──
 setConnected(false);
