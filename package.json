@@ -2,9 +2,11 @@
   "name": "amule-discoveries",
   "version": "1.0.0",
   "description": "aMule discoveries",
+  "main": "electron/main.js",
   "scripts": {
     "test": "node examples/test.js",
-    "start": "electron electron/main.js"
+    "start": "electron electron/main.js",
+    "dist": "electron-builder --mac"
   },
   "keywords": [
     "amule",
@@ -14,6 +16,34 @@
   "author": "tbo47",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^41.0.3"
+    "electron": "^41.0.3",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.tbo47.amule-discoveries",
+    "productName": "aMule Discoveries",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "AmuleClient.js",
+      "ECDefs.js",
+      "ECProtocol.js",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${name}-${version}-${arch}.${ext}"
+    }
   }
 }
