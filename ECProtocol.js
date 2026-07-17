@@ -26,6 +26,9 @@ class ECProtocol {
     this.requestTimeout = options.requestTimeout !== undefined ? options.requestTimeout : 30000;
     // Consecutive timeout counter — after 2 in a row, destroy socket to trigger reconnect
     this.consecutiveTimeouts = 0;
+    // Number of responses still owed to requests that already timed out.
+    // They must be discarded instead of being delivered to the next pending request.
+    this.staleResponsesToSkip = 0;
   }
 
   async connect() {
@@ -45,6 +48,11 @@ class ECProtocol {
   }
 
   setupSocketListeners() {
+    this.bufferedData = Buffer.alloc(0);
+    this.staleResponsesToSkip = 0;
+
+    this.socket.on("data", (data) => this.handleData(data));
+
     this.socket.on("close", async () => {
       this.rejectPendingRequests(new Error("Connection closed"));
       
@@ -70,10 +78,56 @@ class ECProtocol {
   rejectPendingRequests(error) {
     while (this.pendingRequests.length > 0) {
       const request = this.pendingRequests.shift();
-      if (this.socket) {
-        this.socket.removeListener("data", request.onData);
-      }
       request.reject(error);
+    }
+  }
+
+  /*
+   * Single data handler for the socket. Accumulates the stream in
+   * this.bufferedData, extracts complete packets (8-byte header +
+   * payload) and dispatches each one to the oldest pending request.
+   * This keeps parsing aligned even when responses arrive split across
+   * chunks or several packets arrive back to back.
+   */
+  handleData(data) {
+    this.bufferedData = Buffer.concat([this.bufferedData, data]);
+
+    while (this.bufferedData.length >= 8) {
+      const payloadLength = this.bufferedData.readUInt32BE(4);
+      const packetLength = payloadLength + 8;
+      if (this.bufferedData.length < packetLength) {
+        return; // Wait for the rest of the packet
+      }
+
+      const packet = this.bufferedData.subarray(0, packetLength);
+      this.bufferedData = this.bufferedData.subarray(packetLength);
+      this.dispatchPacket(packet);
+    }
+  }
+
+  dispatchPacket(packet) {
+    // Any complete packet proves the connection is alive.
+    this.consecutiveTimeouts = 0;
+
+    // Response belongs to a request that already timed out — drop it so the
+    // stream stays aligned with the remaining pending requests.
+    if (this.staleResponsesToSkip > 0) {
+      this.staleResponsesToSkip--;
+      return;
+    }
+
+    const request = this.pendingRequests.shift();
+    if (!request) {
+      console.warn("[ECProtocol] Received a packet with no pending request; discarding.");
+      return;
+    }
+
+    try {
+      const parsed = this.parsePacket(packet);
+      if (DEBUG) console.log("Received packet", util.inspect(parsed, { showHidden: false, depth: null, colors: true }));
+      request.resolve(parsed);
+    } catch (err) {
+      request.reject(err);
     }
   }
 
@@ -260,86 +314,65 @@ class ECProtocol {
    */
   async sendPacket(opcode, tags = []) {
     return new Promise((resolve, reject) => {
-      let buffer = Buffer.alloc(0);
+      if (!this.socket || this.socket.destroyed) {
+        reject(new Error("Socket is not connected"));
+        return;
+      }
+
       let timer = null;
       let settled = false;
 
-      const cleanup = () => {
-        if (timer) { clearTimeout(timer); timer = null; }
-        const index = this.pendingRequests.findIndex(r => r.onData === onData);
-        if (index !== -1) {
-          this.pendingRequests.splice(index, 1);
-        }
-        if (this.socket) {
-          this.socket.removeListener("data", onData);
-        }
-      };
-
-      const onData = (data) => {
-        try {
-          buffer = Buffer.concat([buffer, data]);
-
-          if (buffer.length < 8) {
-            return; // Wait until we have at least the header
-          }
-
-          const payloadLength = buffer.readUInt32BE(4);
-          const expectedLength = payloadLength + 8;
-
-          if (buffer.length < expectedLength) {
-            return; // Wait for more data
-          }
-
+      const request = {
+        resolve: (parsed) => {
+          if (settled) return;
           settled = true;
-          cleanup();
-          this.consecutiveTimeouts = 0; // Successful response — reset timeout counter
-
-          // Process the full packet
-          const parsed = this.parsePacket(buffer);
-          if(DEBUG) console.log("Received packet", util.inspect(parsed, {showHidden: false, depth: null, colors: true}));
-
+          if (timer) clearTimeout(timer);
           resolve(parsed);
-        } catch (err) {
+        },
+        reject: (err) => {
+          if (settled) return;
           settled = true;
-          cleanup();
+          if (timer) clearTimeout(timer);
           reject(err);
         }
       };
 
-      // Send the packet
       try {
-        if (!this.socket || this.socket.destroyed) {
-          throw new Error("Socket is not connected");
-        }
-
         const packet = this.buildPacket(opcode, tags);
-        this.pendingRequests.push({ resolve, reject, onData });
-        this.socket.on("data", onData);
+        this.pendingRequests.push(request);
         this.socket.write(packet);
-
-        // Start timeout if configured
-        if (this.requestTimeout > 0) {
-          timer = setTimeout(() => {
-            if (settled) return;
-            settled = true;
-            cleanup();
-            this.consecutiveTimeouts++;
-            const opcodeStr = this.getKeyByValue(EC_OPCODES, opcode);
-
-            // After 2 consecutive timeouts, the connection is likely dead.
-            // Destroy the socket to trigger the 'close' handler → automatic reconnect.
-            if (this.consecutiveTimeouts >= 2 && this.socket && !this.socket.destroyed) {
-              console.warn(`[ECProtocol] ${this.consecutiveTimeouts} consecutive timeouts — destroying socket to trigger reconnect`);
-              this.socket.destroy();
-            }
-
-            reject(new Error(`Request timed out after ${this.requestTimeout}ms (opcode: ${opcodeStr})`));
-          }, this.requestTimeout);
-        }
       } catch (err) {
-        settled = true;
-        cleanup();
-        reject(err);
+        const index = this.pendingRequests.indexOf(request);
+        if (index !== -1) this.pendingRequests.splice(index, 1);
+        request.reject(err);
+        return;
+      }
+
+      // Start timeout if configured
+      if (this.requestTimeout > 0) {
+        timer = setTimeout(() => {
+          if (settled) return;
+
+          const index = this.pendingRequests.indexOf(request);
+          if (index !== -1) {
+            this.pendingRequests.splice(index, 1);
+            // The server may still answer this request later; remember to
+            // discard that response so the queue stays aligned.
+            this.staleResponsesToSkip++;
+          }
+
+          this.consecutiveTimeouts++;
+          const opcodeStr = this.getKeyByValue(EC_OPCODES, opcode);
+
+          // After 2 consecutive timeouts, the connection is likely dead.
+          // Destroy the socket to trigger the 'close' handler → automatic reconnect.
+          if (this.consecutiveTimeouts >= 2 && this.socket && !this.socket.destroyed) {
+            console.warn(`[ECProtocol] ${this.consecutiveTimeouts} consecutive timeouts — destroying socket to trigger reconnect`);
+            this.socket.destroy();
+          }
+
+          request.reject(new Error(`Request timed out after ${this.requestTimeout}ms (opcode: ${opcodeStr})`));
+        }, this.requestTimeout);
       }
     });
   }
@@ -432,10 +465,10 @@ class ECProtocol {
       if (valueLength < 0) {
         throw new Error("Invalid tag length: negative value length");
       }
-      tagValue = buffer.slice(offset, offset + valueLength);
+      tagValue = buffer.subarray(offset, offset + valueLength);
       offset += valueLength;
     } else {
-      tagValue = buffer.slice(offset, offset + tagLen);
+      tagValue = buffer.subarray(offset, offset + tagLen);
       offset += tagLen;
     }
 
@@ -460,8 +493,8 @@ class ECProtocol {
       humanValue = tagValue.toString('hex');
       if (humanValue.length !== 32) console.warn('Warning: HASH16 incorrect length');
     } else if (tagType === EC_TAG_TYPES.EC_TAGTYPE_IPV4) {
-      const ipBytes = tagValue.slice(0, 4);
-      const portBytes = tagValue.slice(4, 6);
+      const ipBytes = tagValue.subarray(0, 4);
+      const portBytes = tagValue.subarray(4, 6);
       const ipStr = Array.from(ipBytes).join('.');
       const port = portBytes.readUInt16BE(0);
       humanValue = `${ipStr}:${port}`;
