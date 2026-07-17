@@ -20,6 +20,7 @@ const ed2kLinkEl   = $("ed2kLink");
 const sharedBody       = $("sharedBody");
 const sharedEmpty      = $("sharedEmpty");
 const refreshSharedBtn = $("refreshSharedBtn");
+const exportSharedBtn  = $("exportSharedBtn");
 
 const searchQuery   = $("searchQuery");
 const searchNetwork = $("searchNetwork");
@@ -270,7 +271,7 @@ async function setConnected(val) {
   connectBtn.disabled = val;
   disconnectBtn.disabled = !val;
 
-  const actionBtns = [addLinkBtn, refreshSharedBtn, searchBtn, discRunNowBtn, peerScanBtn];
+  const actionBtns = [addLinkBtn, refreshSharedBtn, exportSharedBtn, searchBtn, discRunNowBtn, peerScanBtn];
   for (const b of actionBtns) b.disabled = !val;
 
   if (!val) speedInfo.textContent = "";
@@ -526,6 +527,22 @@ refreshSharedBtn.addEventListener("click", async () => {
     alert("Could not reload shared files on aMule:\n" + err.message);
   }
   await loadSharedFiles();
+});
+
+exportSharedBtn.addEventListener("click", async () => {
+  exportSharedBtn.disabled = true;
+  try {
+    const res = await call("exportCollection");
+    if (res && res.exported) {
+      const orig = exportSharedBtn.textContent;
+      exportSharedBtn.textContent = `Exported ${res.count} file(s)`;
+      setTimeout(() => { exportSharedBtn.textContent = orig; }, 2500);
+    }
+  } catch (err) {
+    alert("Could not export collection:\n" + err.message);
+  } finally {
+    exportSharedBtn.disabled = !connected;
+  }
 });
 
 // ── Review modal ──

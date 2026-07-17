@@ -1,7 +1,7 @@
 "use strict";
 
 const path = require("path");
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog } = require("electron");
 const { execFile } = require("child_process");
 const fs = require("fs");
 const AmuleClient = require("../AmuleClient");
@@ -125,8 +125,7 @@ ipc("amule:getDownloadQueue", async () => {
   return client.getDownloadQueue();
 });
 
-ipc("amule:getSharedFiles", async () => {
-  requireClient();
+async function getCollectionFiles() {
   const files = await client.getSharedFiles();
   const downloadQueue = await client.getDownloadQueue();
   const filesWithoutDownloadQueue = files.filter(f => !downloadQueue.some(d => d.fileHash === f.fileHash));
@@ -138,6 +137,78 @@ ipc("amule:getSharedFiles", async () => {
   }
   filesWithoutDownloadQueue.sort((a, b) => b.firstSeen - a.firstSeen || (a.fileName || "").localeCompare(b.fileName || ""));
   return filesWithoutDownloadQueue;
+}
+
+ipc("amule:getSharedFiles", async () => {
+  requireClient();
+  return getCollectionFiles();
+});
+
+function ed2kLinkFor(f, source) {
+  let link = f.ed2kLink;
+  if (!link) {
+    if (!f.fileHash) return "";
+    link = `ed2k://|file|${encodeURIComponent(f.fileName || "unknown")}|${f.fileSize || 0}|${f.fileHash}|/`;
+  }
+  if (source && !/\|sources,/i.test(link)) {
+    link = link.endsWith("|/")
+      ? `${link}|sources,${source}|/`
+      : `${link}|/|sources,${source}|/`;
+  }
+  return link;
+}
+
+/** High ed2k IDs encode the client's public IP as a little-endian uint32. */
+function ipFromEd2kId(id) {
+  const n = Number(id && typeof id === "object" ? id._value : id);
+  if (!Number.isFinite(n) || n <= 0x1000000) return null; // low ID or unknown
+  return [n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff].join(".");
+}
+
+/** Return "ip:port" for this aMule instance, or null if it cannot be determined (low ID). */
+async function getSelfEd2kSource() {
+  try {
+    const [connState, prefs] = await Promise.all([
+      client.getConnectionState(),
+      client.getConnectionPreferences(),
+    ]);
+    const cs = connState?.EC_TAG_CONNSTATE || connState || {};
+    const ip = ipFromEd2kId(cs.EC_TAG_CLIENT_ID) || ipFromEd2kId(cs.EC_TAG_ED2K_ID);
+    if (!ip) return null;
+    const port = Number(prefs?.tcpPort) || 4662;
+    return `${ip}:${port}`;
+  } catch (_) {
+    return null;
+  }
+}
+
+function collectionToText(files, source) {
+  return files
+    .map((f) => {
+      const link = ed2kLinkFor(f, source);
+      if (!link) return null;
+      return `${f.fileName || "?"}\n${link}`;
+    })
+    .filter(Boolean)
+    .join("\n\n") + "\n";
+}
+
+ipc("amule:exportCollection", async () => {
+  requireClient();
+  const files = await getCollectionFiles();
+  if (files.length === 0) throw new Error("Collection is empty, nothing to export.");
+
+  const date = new Date().toISOString().slice(0, 10);
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    title: "Export My Collection",
+    defaultPath: path.join(app.getPath("downloads"), `amule-collection-${date}.txt`),
+    filters: [{ name: "Text", extensions: ["txt"] }],
+  });
+  if (canceled || !filePath) return { exported: false };
+
+  const source = await getSelfEd2kSource();
+  await fs.promises.writeFile(filePath, collectionToText(files, source), "utf8");
+  return { exported: true, filePath, count: files.length };
 });
 
 ipc("amule:updateFileReview", async ({ fileHash, rating, comment }) => {

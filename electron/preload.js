@@ -19,6 +19,7 @@ const channels = [
   "getServerList",
   "getCategories",
   "refreshSharedFiles",
+  "exportCollection",
   "openFile",
   "deleteFile",
   "updateFileReview",
