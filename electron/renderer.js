@@ -339,6 +339,20 @@ document.addEventListener("keydown", (e) => {
   selectTab(tab);
 });
 
+// "f" focuses the active tab's filter input (when not already typing in a field).
+const FILTER_INPUT_BY_TAB = { shared: "sharedSearch", discoveries: "discSearch", peers: "peerSearch" };
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "f" || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+  const el = document.activeElement;
+  if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable)) return;
+  const activeTab = tabBar.querySelector(".tab.active");
+  const input = $(FILTER_INPUT_BY_TAB[activeTab?.dataset.tab] || "");
+  if (!input) return;
+  e.preventDefault();
+  input.focus();
+  input.select();
+});
+
 // ── Connect / Disconnect ──
 
 const loginForm = $("loginForm");
@@ -508,6 +522,17 @@ if (sharedSearchInput) {
   sharedSearchInput.addEventListener("input", () => applySharedSortAndRender());
 }
 
+// ✕ buttons inside the table filter inputs: clear and re-run the filter
+document.querySelectorAll(".filter-clear").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const input = btn.parentElement.querySelector("input");
+    if (!input) return;
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+  });
+});
+
 if (sharedThead) {
   sharedThead.addEventListener("click", (e) => {
     const th = e.target.closest("th[data-sort]");
@@ -596,7 +621,7 @@ menuExportBtn.addEventListener("click", async () => {
   importExportMenu.classList.add("hidden");
   importExportBtn.disabled = true;
   try {
-    const res = await call("exportCollection");
+    const res = await call("exportCollection", { query: ($("sharedSearch")?.value || "").trim() });
     if (res && res.exported) flashImportExportIcon(`Exported ${res.count} file(s)`);
   } catch (err) {
     alert("Could not export collection:\n" + err.message);

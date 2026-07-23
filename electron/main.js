@@ -196,15 +196,20 @@ function collectionToText(files, source) {
     .join("\n\n") + "\n";
 }
 
-ipc("amule:exportCollection", async () => {
+ipc("amule:exportCollection", async ({ query } = {}) => {
   requireClient();
-  const files = await getCollectionFiles();
-  if (files.length === 0) throw new Error("Collection is empty, nothing to export.");
+  let files = await getCollectionFiles();
+  const q = (query || "").trim().toLowerCase();
+  if (q) files = files.filter((f) => (f.fileName || "").toLowerCase().includes(q));
+  if (files.length === 0) {
+    throw new Error(q ? "No files match the current filter, nothing to export." : "Collection is empty, nothing to export.");
+  }
 
   const date = new Date().toISOString().slice(0, 10);
+  const filterSlug = q ? "-" + q.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "") : "";
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
     title: "Export My Collection",
-    defaultPath: path.join(app.getPath("downloads"), `amule-collection-${date}.txt`),
+    defaultPath: path.join(app.getPath("downloads"), `amule-collection${filterSlug}-${date}.txt`),
     filters: [{ name: "Text", extensions: ["txt"] }],
   });
   if (canceled || !filePath) return { exported: false };
