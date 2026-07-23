@@ -6,6 +6,7 @@ const { execFile } = require("child_process");
 const fs = require("fs");
 const AmuleClient = require("../AmuleClient");
 const discoveries = require("./discoveries");
+const peers = require("./peers");
 
 let mainWindow = null;
 let client = null;
@@ -102,12 +103,14 @@ ipc("amule:connect", async ({ host, port, password }) => {
 
   saveConnectionSettings(safeHost, safePort, password || "");
   discoveries.startScheduler(() => client, notifyRenderer);
+  peers.startScheduler(() => client, notifyRenderer);
 
   return { host: safeHost, port: safePort };
 });
 
 ipc("amule:disconnect", async () => {
   discoveries.stopScheduler();
+  peers.stopScheduler();
   if (client) {
     try { client.close(); } catch (_) { /* ignore */ }
     client = null;
@@ -209,6 +212,36 @@ ipc("amule:exportCollection", async () => {
   const source = await getSelfEd2kSource();
   await fs.promises.writeFile(filePath, collectionToText(files, source), "utf8");
   return { exported: true, filePath, count: files.length };
+});
+
+ipc("amule:importCollection", async () => {
+  requireClient();
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: "Import Collection",
+    defaultPath: app.getPath("downloads"),
+    filters: [{ name: "Text", extensions: ["txt"] }],
+    properties: ["openFile"],
+  });
+  if (canceled || !filePaths || filePaths.length === 0) return { imported: false };
+
+  const text = await fs.promises.readFile(filePaths[0], "utf8");
+  const links = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("ed2k://|file|"));
+  if (links.length === 0) throw new Error("No ed2k://|file| links found in this file.");
+
+  let added = 0;
+  let failed = 0;
+  for (const link of links) {
+    try {
+      await client.addEd2kLink(link, 0);
+      added++;
+    } catch (_) {
+      failed++;
+    }
+  }
+  return { imported: true, added, failed, total: links.length };
 });
 
 ipc("amule:updateFileReview", async ({ fileHash, rating, comment }) => {
@@ -378,67 +411,32 @@ ipc("amule:discoveryRunNow", async () => {
   return true;
 });
 
-// ── Peer shared files (ephemeral, never persisted) ──
+// ── Peer shared files (persisted in peers.json) ──
 
-let peerScanRunning = false;
+ipc("amule:peersGetState", async () => {
+  return peers.getView();
+});
 
-// Ask every currently-known client (download sources, upload/queue peers,
-// friends) for its shared file list over ed2k, using
-// AmuleClient.getClientSharedFiles(). aMule delivers each peer's answer into
-// the shared search-result pool without tagging it by peer, so we snapshot the
-// existing result hashes first and attribute only the *newly appeared* files to
-// the peer we just queried. Results are streamed to the renderer and nothing is
-// written to disk.
-ipc("amule:scanPeerSharedFiles", async () => {
+ipc("amule:peersScanNow", async () => {
   requireClient();
-  if (peerScanRunning) throw new Error("A peer scan is already running.");
-  peerScanRunning = true;
-
-  const cl = client;
-
-  (async () => {
-    try {
-      const update = await cl.getUpdate();
-      const clients = (update.clients || []).filter((c) => Number.isInteger(c.ecid));
-      notifyRenderer("peers:started", { total: clients.length });
-
-      // Snapshot existing search-result hashes so already-present files are not
-      // mis-attributed to the first peer we query.
-      const seen = new Set();
-      try {
-        const initial = await cl.getSearchResults();
-        for (const r of initial.results || []) if (r.fileHash) seen.add(r.fileHash);
-      } catch (_) { /* ignore */ }
-
-      for (let i = 0; i < clients.length; i++) {
-        const c = clients[i];
-        const peer = {
-          ecid: c.ecid,
-          userName: c.userName || "",
-          ip: c.ip || "",
-          software: c.softwareVersion || c.software || "",
-          files: [],
-        };
-        try {
-          const res = await cl.getClientSharedFiles(c.ecid, { timeoutMs: 10_000, intervalMs: 1_000 });
-          const fresh = (res.results || []).filter((r) => r.fileHash && !seen.has(r.fileHash));
-          for (const r of fresh) seen.add(r.fileHash);
-          peer.files = fresh;
-        } catch (err) {
-          peer.error = err?.message || String(err);
-        }
-        notifyRenderer("peers:peer", { index: i + 1, total: clients.length, peer });
-      }
-
-      notifyRenderer("peers:done", { total: clients.length });
-    } catch (err) {
-      notifyRenderer("peers:error", { error: err?.message || String(err) });
-    } finally {
-      peerScanRunning = false;
-    }
-  })();
-
+  // Fire-and-forget; progress streams to the renderer over peers:* events.
+  peers.scan(() => client, notifyRenderer, { force: true });
   return true;
+});
+
+ipc("amule:peersBan", async ({ key }) => {
+  peers.setBanned(key, true);
+  return peers.getView();
+});
+
+ipc("amule:peersUnban", async ({ key }) => {
+  peers.setBanned(key, false);
+  return peers.getView();
+});
+
+ipc("amule:peersUpdateSettings", async ({ scanIntervalHours, refetchDays }) => {
+  peers.updateSettings({ scanIntervalHours, refetchDays });
+  return peers.getView();
 });
 
 ipc("amule:getConnectionSettings", async () => {
@@ -463,6 +461,7 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   discoveries.stopScheduler();
+  peers.stopScheduler();
   if (client) {
     try { client.close(); } catch (_) { /* ignore */ }
     client = null;

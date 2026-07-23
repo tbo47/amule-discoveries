@@ -20,6 +20,7 @@ const channels = [
   "getCategories",
   "refreshSharedFiles",
   "exportCollection",
+  "importCollection",
   "openFile",
   "deleteFile",
   "updateFileReview",
@@ -29,7 +30,11 @@ const channels = [
   "discoveryRemoveKeyword",
   "discoveryUpdateKeyword",
   "discoveryRunNow",
-  "scanPeerSharedFiles",
+  "peersGetState",
+  "peersScanNow",
+  "peersBan",
+  "peersUnban",
+  "peersUpdateSettings",
   "getConnectionSettings",
 ];
 

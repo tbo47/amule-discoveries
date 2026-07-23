@@ -134,6 +134,21 @@
     }
     .search-form input { flex: 1; min-width: 200px; }
 
+    /* ── Dropdown menu ── */
+    .menu-wrap { position: relative; }
+    .menu {
+      position: absolute; right: 0; top: calc(100% + 4px);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; padding: 4px; z-index: 50;
+      display: flex; flex-direction: column; min-width: 180px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.4);
+    }
+    .menu-item {
+      background: transparent; border: none; border-radius: 4px;
+      text-align: left; padding: 6px 10px;
+    }
+    .menu-item:hover { background: rgba(56,139,253,.15); }
+
     /* ── JSON output ── */
     pre.json {
       background: var(--surface); border: 1px solid var(--border);
@@ -179,7 +194,7 @@
     }
     .pagination {
       display: flex; gap: 8px; align-items: center;
-      margin-bottom: 8px; font-size: 12px; color: var(--muted);
+      margin-top: 8px; font-size: 12px; color: var(--muted);
     }
     .pagination .page-status { min-width: 180px; }
     .tag {
@@ -252,6 +267,73 @@
     }
     .search-kw-tag:hover { border-color: var(--muted); color: var(--text); }
     .search-kw-tag .kw-n { color: var(--muted); font-size: 11px; margin-left: 4px; }
+
+    /* ── Peers ── */
+    .peer-toolbar {
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .peer-settings {
+      margin-left: auto;
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12px; color: var(--muted); white-space: nowrap;
+    }
+    .peer-settings .sep { color: var(--border); }
+    .peer-settings input {
+      width: 52px;
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 3px 6px; font-size: 12px; text-align: right;
+    }
+    .peer-settings input:focus { outline: none; border-color: var(--blue); }
+    .peer-stats { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    .stat-chip {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 999px; padding: 3px 12px;
+      font-size: 12px; color: var(--muted);
+    }
+    .stat-chip b { color: var(--text); font-weight: 600; }
+    .peer-layout {
+      display: grid; grid-template-columns: 300px minmax(0, 1fr);
+      gap: 20px; align-items: start;
+    }
+    .peer-col-title {
+      font-size: 12px; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .5px;
+      margin-bottom: 8px;
+    }
+    .peer-list { display: flex; flex-direction: column; gap: 8px; }
+    .peer-card {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 12px;
+      cursor: pointer; transition: border-color .1s;
+    }
+    .peer-card:hover { border-color: var(--muted); }
+    .peer-card.selected { border-color: var(--blue); }
+    .peer-card.banned { opacity: .5; }
+    .peer-card-main { flex: 1; min-width: 0; }
+    .peer-card .peer-name {
+      font-weight: 600; font-size: 13px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .peer-card .peer-meta {
+      font-size: 11px; color: var(--muted);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .peer-new-badge {
+      background: rgba(46,160,67,.15); color: #3fb950;
+      border: 1px solid rgba(46,160,67,.4);
+      border-radius: 999px; padding: 1px 8px;
+      font-size: 11px; font-weight: 600; white-space: nowrap;
+    }
+    .peer-ban-btn {
+      font-size: 11px; padding: 3px 8px;
+      background: transparent; border-color: transparent; color: var(--muted);
+    }
+    .peer-ban-btn:hover { border-color: var(--red); color: var(--red); }
+    .peer-card.banned .peer-ban-btn:hover { border-color: var(--accent); color: var(--accent-hover); }
+    .peer-banned-title { margin-top: 16px; }
 
     /* ── Review modal ── */
     .modal-overlay {
@@ -348,7 +430,13 @@
         <input id="ed2kLink" placeholder="ed2k:// or magnet link" />
         <button id="addLinkBtn" disabled>Add Link</button>
         <button id="refreshSharedBtn" disabled>Refresh</button>
-        <button id="exportSharedBtn" disabled title="Export the collection list to a text file">Export</button>
+        <div class="menu-wrap">
+          <button id="importExportBtn" disabled title="Import / export the collection">⇅</button>
+          <div id="importExportMenu" class="menu hidden">
+            <button class="menu-item" id="menuExportBtn">Export to text file…</button>
+            <button class="menu-item" id="menuImportBtn">Import from text file…</button>
+          </div>
+        </div>
       </div>
       <table>
         <thead id="sharedThead">
@@ -409,11 +497,6 @@
       </div>
       <div class="disc-keywords" id="discKeywords"></div>
       <div class="disc-log" id="discLog"></div>
-      <div class="pagination" id="discPagination" style="display:none">
-        <button id="discPrevPage" type="button">Previous</button>
-        <span id="discPageStatus" class="page-status"></span>
-        <button id="discNextPage" type="button">Next</button>
-      </div>
       <table>
         <thead>
           <tr>
@@ -427,32 +510,48 @@
         </thead>
         <tbody id="discBody"></tbody>
       </table>
+      <div class="pagination" id="discPagination" style="display:none">
+        <button id="discPrevPage" type="button">Previous</button>
+        <span id="discPageStatus" class="page-status"></span>
+        <button id="discNextPage" type="button">Next</button>
+      </div>
       <p class="muted mb" id="discEmpty" style="display:none">No discoveries yet.</p>
     </div>
 
     <!-- Peer Files -->
     <div class="panel" id="panel-peers">
-      <div class="flex-gap mb">
-        <button id="peerScanBtn" disabled>Scan Known Peers</button>
+      <div class="peer-toolbar">
+        <button id="peerScanBtn" class="primary" disabled>Scan Known Peers</button>
         <span class="muted" id="peerStatus"></span>
+        <div class="peer-settings" title="Scans look for currently-known peers; peers who shared their file list are re-fetched on the longer interval, which is also the “new files” window.">
+          <label>Scan every <input id="peerScanIntervalInput" type="number" min="1" step="1" /> h</label>
+          <span class="sep">·</span>
+          <label>Re-fetch every <input id="peerRefetchDaysInput" type="number" min="1" step="1" /> d</label>
+        </div>
       </div>
-      <p class="muted mb" style="font-size:12px">
-        Asks every currently-known client (download sources &amp; upload/queue peers) for its
-        shared file list over ed2k. Results are live only and never saved.
-      </p>
-      <table>
-        <thead>
-          <tr>
-            <th style="width:80px">Action</th>
-            <th>File Name<input id="peerSearch" placeholder="Filter…" style="margin-left:8px;font-size:12px;padding:2px 6px;width:140px;vertical-align:middle" /></th>
-            <th style="width:120px">Size</th>
-            <th style="width:80px">Sources</th>
-            <th style="width:200px">Peer</th>
-          </tr>
-        </thead>
-        <tbody id="peerBody"></tbody>
-      </table>
-      <p class="muted mb" id="peerEmpty" style="display:none">No peer files yet. Click “Scan Known Peers”.</p>
+      <div class="peer-stats" id="peerStats"></div>
+      <div class="peer-layout">
+        <aside class="peer-list-col">
+          <div class="peer-col-title">Peers with shared lists</div>
+          <div id="peerList" class="peer-list"></div>
+        </aside>
+        <section class="peer-files-col">
+          <div class="peer-col-title" id="peerFilesTitle">New files</div>
+          <table>
+            <thead>
+              <tr>
+                <th style="width:90px">Action</th>
+                <th>File Name<input id="peerSearch" placeholder="Filter…" style="margin-left:8px;font-size:12px;padding:2px 6px;width:140px;vertical-align:middle" /></th>
+                <th style="width:110px">Size</th>
+                <th style="width:170px">Peer</th>
+                <th style="width:110px">First Seen</th>
+              </tr>
+            </thead>
+            <tbody id="peerBody"></tbody>
+          </table>
+          <p class="muted mb" id="peerEmpty" style="display:none"></p>
+        </section>
+      </div>
     </div>
 
   </div>

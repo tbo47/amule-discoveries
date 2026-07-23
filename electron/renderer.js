@@ -20,7 +20,10 @@ const ed2kLinkEl   = $("ed2kLink");
 const sharedBody       = $("sharedBody");
 const sharedEmpty      = $("sharedEmpty");
 const refreshSharedBtn = $("refreshSharedBtn");
-const exportSharedBtn  = $("exportSharedBtn");
+const importExportBtn  = $("importExportBtn");
+const importExportMenu = $("importExportMenu");
+const menuExportBtn    = $("menuExportBtn");
+const menuImportBtn    = $("menuImportBtn");
 
 const searchQuery   = $("searchQuery");
 const searchNetwork = $("searchNetwork");
@@ -93,25 +96,12 @@ function sharedPlayButton(shared, fallbackName = "") {
   return `<button class="shared-play" data-path="${escapeAttr(path)}" data-name="${escapeAttr(name)}" title="${escapeAttr(title)}"${disabled}>▶ Play</button>`;
 }
 
-function searchDownloadButton(r) {
+/** Download button for search / discovery / peer rows; only the CSS class differs. */
+function downloadButton(r, className) {
   const hash = r.fileHash || "";
   const link = r.ed2kLink || (hash ? ed2kUrl(r) : "");
   const disabled = hash || link ? "" : " disabled";
-  return `<button class="sr-dl" data-hash="${escapeAttr(hash)}" data-link="${escapeAttr(link)}"${disabled}>Download</button>`;
-}
-
-function discoveryDownloadButton(r) {
-  const hash = r.fileHash || "";
-  const link = r.ed2kLink || (hash ? ed2kUrl(r) : "");
-  const disabled = hash || link ? "" : " disabled";
-  return `<button class="disc-dl" data-hash="${escapeAttr(hash)}" data-link="${escapeAttr(link)}"${disabled}>Download</button>`;
-}
-
-function peerDownloadButton(r) {
-  const hash = r.fileHash || "";
-  const link = r.ed2kLink || (hash ? ed2kUrl(r) : "");
-  const disabled = hash || link ? "" : " disabled";
-  return `<button class="peer-dl" data-hash="${escapeAttr(hash)}" data-link="${escapeAttr(link)}"${disabled}>Download</button>`;
+  return `<button class="${escapeAttr(className)}" data-hash="${escapeAttr(hash)}" data-link="${escapeAttr(link)}"${disabled}>Download</button>`;
 }
 
 function queuedDownloadButton(download, options = {}) {
@@ -119,6 +109,41 @@ function queuedDownloadButton(download, options = {}) {
   const className = options.className || "sr-queued";
   const progress = download?.progress != null ? ` (${download.progress}%)` : "";
   return `<button class="${escapeAttr(className)}" title="Already in download queue" disabled>${escapeHtml(label)}${escapeHtml(progress)}</button>`;
+}
+
+/**
+ * Action button for a result row: play (if already shared), a disabled "queued"
+ * badge (if in the download queue), or a download button — shared by the search,
+ * discovery, and peer tables.
+ * @param {object} opts - downloadClass, queuedLabel, queuedClass, and requirePath
+ *   (search shows Play for any shared match; discovery/peer only when a local path exists).
+ */
+function actionCell(r, opts) {
+  const hashKey = fileHashKey(r.fileHash);
+  const shared = sharedByHash.get(hashKey);
+  const queued = queuedByHash.get(hashKey);
+  if (shared && (opts.requirePath === false || shared.path)) {
+    return sharedPlayButton(shared, r.fileName || "");
+  }
+  if (queued) {
+    return queuedDownloadButton(queued, { label: opts.queuedLabel, className: opts.queuedClass });
+  }
+  return downloadButton(r, opts.downloadClass);
+}
+
+/**
+ * Handle a click on a ".shared-play" button within a results table.
+ * Returns true if the click was a play button (and was handled), so callers can early-return.
+ */
+async function handleSharedPlayClick(e) {
+  const play = e.target.closest(".shared-play");
+  if (!play) return false;
+  try {
+    await call("openFile", { filePath: play.dataset.path, fileName: play.dataset.name });
+  } catch (err) {
+    alert("Could not open file:\n" + err.message);
+  }
+  return true;
 }
 
 /** Lifetime upload ÷ file size (aMule transferredTotal / fileSize). */
@@ -271,7 +296,7 @@ async function setConnected(val) {
   connectBtn.disabled = val;
   disconnectBtn.disabled = !val;
 
-  const actionBtns = [addLinkBtn, refreshSharedBtn, exportSharedBtn, searchBtn, discRunNowBtn, peerScanBtn];
+  const actionBtns = [addLinkBtn, refreshSharedBtn, importExportBtn, searchBtn, discRunNowBtn, peerScanBtn];
   for (const b of actionBtns) b.disabled = !val;
 
   if (!val) speedInfo.textContent = "";
@@ -289,21 +314,37 @@ async function setConnected(val) {
 // ── Tabs ──
 
 const tabBar = $("tabBar");
-tabBar.addEventListener("click", (e) => {
-  const tab = e.target.closest(".tab");
-  if (!tab) return;
+
+function selectTab(tab) {
   for (const t of tabBar.children) t.classList.remove("active");
   tab.classList.add("active");
   for (const p of document.querySelectorAll(".panel")) p.classList.remove("active");
   $("panel-" + tab.dataset.tab).classList.add("active");
+}
+
+tabBar.addEventListener("click", (e) => {
+  const tab = e.target.closest(".tab");
+  if (!tab) return;
+  selectTab(tab);
+});
+
+// Chrome-style tab switching: Cmd/Ctrl+1..8 selects the Nth tab, Cmd/Ctrl+9 the last one.
+document.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+  if (e.key < "1" || e.key > "9") return;
+  const tabs = tabBar.children;
+  const tab = e.key === "9" ? tabs[tabs.length - 1] : tabs[Number(e.key) - 1];
+  if (!tab) return;
+  e.preventDefault();
+  selectTab(tab);
 });
 
 // ── Connect / Disconnect ──
 
 const loginForm = $("loginForm");
 
-loginForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
+/** Connect using the login form fields; silent suppresses the failure alert (startup auto-connect). */
+async function connectWithForm({ silent = false } = {}) {
   const host = hostEl.value.trim() || "127.0.0.1";
   const port = sanitizePort(portEl.value);
   hostEl.value = host;
@@ -315,12 +356,17 @@ loginForm.addEventListener("submit", async (e) => {
     await call("connect", { host, port, password: passwordEl.value });
     setConnected(true);
   } catch (err) {
-    alert("Connection failed:\n" + err.message);
+    if (!silent) alert("Connection failed:\n" + err.message);
     setConnected(false);
   } finally {
     connectBtn.textContent = "Connect";
     if (!connected) connectBtn.disabled = false;
   }
+}
+
+loginForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  connectWithForm();
 });
 
 disconnectBtn.addEventListener("click", async () => {
@@ -443,7 +489,7 @@ function renderSharedFiles(list) {
     const path = f.path || "";
     const link = f.ed2kLink || ed2kUrl(f);
     return `<tr>
-      <td>${path ? `<button class="shared-play" data-path="${escapeAttr(path)}" data-name="${escapeAttr(f.fileName || "")}" title="Open file">▶ Play</button>` : "—"}</td>
+      <td>${path ? sharedPlayButton(f) : "—"}</td>
       <td title="${escapeHtml(path)}">${escapeHtml(f.fileName || "?")}</td>
       <td>${formatBytes(f.fileSize)}</td>
       <td class="muted" style="white-space:nowrap;letter-spacing:1px">${popularityCell(f, popRatings[i])}</td>
@@ -479,15 +525,7 @@ if (sharedThead) {
 }
 
 sharedBody.addEventListener("click", async (e) => {
-  const play = e.target.closest(".shared-play");
-  if (play) {
-    try {
-      await call("openFile", { filePath: play.dataset.path, fileName: play.dataset.name });
-    } catch (err) {
-      alert("Could not open file:\n" + err.message);
-    }
-    return;
-  }
+  if (await handleSharedPlayClick(e)) return;
 
   const share = e.target.closest(".shared-share");
   if (share) {
@@ -529,19 +567,60 @@ refreshSharedBtn.addEventListener("click", async () => {
   await loadSharedFiles();
 });
 
-exportSharedBtn.addEventListener("click", async () => {
-  exportSharedBtn.disabled = true;
+// ── Import / Export menu ──
+
+importExportBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  importExportMenu.classList.toggle("hidden");
+});
+
+document.addEventListener("click", (e) => {
+  if (!importExportMenu.classList.contains("hidden") && !e.target.closest(".menu-wrap")) {
+    importExportMenu.classList.add("hidden");
+  }
+});
+
+/** Briefly show a ✓ on the import/export icon with a summary tooltip. */
+function flashImportExportIcon(title) {
+  const orig = importExportBtn.textContent;
+  const origTitle = importExportBtn.title;
+  importExportBtn.textContent = "✓";
+  importExportBtn.title = title;
+  setTimeout(() => {
+    importExportBtn.textContent = orig;
+    importExportBtn.title = origTitle;
+  }, 2500);
+}
+
+menuExportBtn.addEventListener("click", async () => {
+  importExportMenu.classList.add("hidden");
+  importExportBtn.disabled = true;
   try {
     const res = await call("exportCollection");
-    if (res && res.exported) {
-      const orig = exportSharedBtn.textContent;
-      exportSharedBtn.textContent = `Exported ${res.count} file(s)`;
-      setTimeout(() => { exportSharedBtn.textContent = orig; }, 2500);
-    }
+    if (res && res.exported) flashImportExportIcon(`Exported ${res.count} file(s)`);
   } catch (err) {
     alert("Could not export collection:\n" + err.message);
   } finally {
-    exportSharedBtn.disabled = !connected;
+    importExportBtn.disabled = !connected;
+  }
+});
+
+menuImportBtn.addEventListener("click", async () => {
+  importExportMenu.classList.add("hidden");
+  importExportBtn.disabled = true;
+  try {
+    const res = await call("importCollection");
+    if (res && res.imported) {
+      flashImportExportIcon(`Started ${res.added} download(s)`);
+      if (res.failed > 0) {
+        alert(`${res.added} download(s) started, ${res.failed} link(s) could not be added.`);
+      }
+      await loadSharedFiles();
+    }
+  } catch (err) {
+    alert("Could not import collection:\n" + err.message);
+  } finally {
+    importExportBtn.disabled = !connected;
   }
 });
 
@@ -654,14 +733,7 @@ if (reviewOverlay) {
 
 function renderSearchResults(results) {
   searchBody.innerHTML = results.map((r) => {
-    const hashKey = fileHashKey(r.fileHash);
-    const shared = sharedByHash.get(hashKey);
-    const queued = queuedByHash.get(hashKey);
-    const action = shared
-      ? sharedPlayButton(shared, r.fileName || "")
-      : queued
-        ? queuedDownloadButton(queued)
-        : searchDownloadButton(r);
+    const action = actionCell(r, { downloadClass: "sr-dl", requirePath: false });
     return `<tr>
       <td>${action}</td>
       <td>${escapeHtml(displayFileName(r.fileName))}</td>
@@ -718,15 +790,7 @@ if (searchForm) {
 }
 
 searchBody.addEventListener("click", async (e) => {
-  const play = e.target.closest(".shared-play");
-  if (play) {
-    try {
-      await call("openFile", { filePath: play.dataset.path, fileName: play.dataset.name });
-    } catch (err) {
-      alert("Could not open file:\n" + err.message);
-    }
-    return;
-  }
+  if (await handleSharedPlayClick(e)) return;
 
   const btn = e.target.closest(".sr-dl");
   if (!btn) return;
@@ -847,17 +911,11 @@ function renderDiscoveryResults(results, options = {}) {
   const pageResults = visibleResults.slice(pageStart, pageStart + DISCOVERY_PAGE_SIZE);
   renderDiscoveryPagination(visibleResults.length);
   discBody.innerHTML = pageResults.map((r) => {
-    const hashKey = fileHashKey(r.fileHash);
-    const shared = sharedByHash.get(hashKey);
-    const queued = queuedByHash.get(hashKey);
-    let actionTd;
-    if (shared && shared.path) {
-      actionTd = `<button class="shared-play" data-path="${escapeAttr(shared.path)}" data-name="${escapeAttr(shared.fileName || "")}" title="Open file">▶ Play</button>`;
-    } else if (queued) {
-      actionTd = queuedDownloadButton(queued, { label: "Downloading", className: "disc-queued" });
-    } else {
-      actionTd = discoveryDownloadButton(r);
-    }
+    const actionTd = actionCell(r, {
+      downloadClass: "disc-dl",
+      queuedLabel: "Downloading",
+      queuedClass: "disc-queued",
+    });
     return `<tr>
     <td>${actionTd}</td>
     <td title="${escapeHtml(r.fileHash || "")}">${escapeHtml(displayFileName(r.fileName))}</td>
@@ -962,15 +1020,7 @@ discRunNowBtn.addEventListener("click", async () => {
 });
 
 discBody.addEventListener("click", async (e) => {
-  const play = e.target.closest(".shared-play");
-  if (play) {
-    try {
-      await call("openFile", { filePath: play.dataset.path, fileName: play.dataset.name });
-    } catch (err) {
-      alert("Could not open file:\n" + err.message);
-    }
-    return;
-  }
+  if (await handleSharedPlayClick(e)) return;
 
   const btn = e.target.closest(".disc-dl");
   if (!btn) return;
@@ -999,56 +1049,162 @@ window.amule.onDiscovery((msg) => {
 // Load discovery state on startup (keywords persist across sessions)
 loadDiscoveries();
 
-// ── Peer Files (ephemeral) ──
+// ── Peer Files (persisted; scanned automatically, banned peers skipped) ──
 
-/** Flat list of { ...file, peerName, peerIp, ecid }. Never persisted. */
-let peerResults = [];
+const peerList              = $("peerList");
+const peerStats             = $("peerStats");
+const peerFilesTitle        = $("peerFilesTitle");
+const peerScanIntervalInput = $("peerScanIntervalInput");
+const peerRefetchDaysInput  = $("peerRefetchDaysInput");
 
-function renderPeerResults() {
+/** Last view from main: { settings, lastScan, scanning, peers, newFiles }. */
+let peerView = { settings: {}, lastScan: 0, scanning: false, peers: [], newFiles: [] };
+/** When set, the files table only shows this peer's new files. */
+let selectedPeerKey = null;
+
+function peerDisplayName(p) {
+  return p.userName || p.peerName || p.ip || p.peerIp || "(unknown peer)";
+}
+
+function renderPeerStats() {
+  const responders = peerView.peers.filter((p) => !p.banned);
+  const banned = peerView.peers.length - responders.length;
+  const days = peerView.settings.refetchDays;
+  const chips = [
+    `<span class="stat-chip"><b>${responders.length}</b> peer(s) with shared lists</span>`,
+    `<span class="stat-chip"><b>${peerView.newFiles.length}</b> new file(s) in the last ${days} day(s)</span>`,
+    `<span class="stat-chip">Last scan: <b>${peerView.lastScan ? timeAgo(peerView.lastScan) : "never"}</b></span>`,
+  ];
+  if (banned > 0) chips.push(`<span class="stat-chip"><b>${banned}</b> banned</span>`);
+  peerStats.innerHTML = chips.join("");
+}
+
+function peerCardHtml(p, selected) {
+  const meta1 = [p.ip, p.software].filter(Boolean).join(" · ");
+  const meta2 = p.banned
+    ? "banned"
+    : `${p.fileCount} file(s) · fetched ${p.lastFetch ? timeAgo(p.lastFetch) : "never"}`;
+  const badge = !p.banned && p.newCount > 0 ? `<span class="peer-new-badge">+${p.newCount} new</span>` : "";
+  const banBtn = p.banned
+    ? `<button class="peer-ban-btn peer-unban" data-key="${escapeAttr(p.key)}" title="Unban this peer">Unban</button>`
+    : `<button class="peer-ban-btn peer-ban" data-key="${escapeAttr(p.key)}" title="Ban this peer (never scanned again, files hidden)">Ban</button>`;
+  return `<div class="peer-card${p.banned ? " banned" : ""}${selected ? " selected" : ""}" data-key="${escapeAttr(p.key)}">
+    <div class="peer-card-main">
+      <div class="peer-name" title="${escapeAttr(peerDisplayName(p))}">${escapeHtml(peerDisplayName(p))}</div>
+      <div class="peer-meta">${escapeHtml(meta1 || "—")}</div>
+      <div class="peer-meta">${escapeHtml(meta2)}</div>
+    </div>
+    ${badge}
+    ${banBtn}
+  </div>`;
+}
+
+function renderPeerList() {
+  const active = peerView.peers.filter((p) => !p.banned);
+  const banned = peerView.peers.filter((p) => p.banned);
+  if (peerView.peers.length === 0) {
+    peerList.innerHTML = '<p class="muted" style="font-size:12px">No peers have shared their file list yet. Peers are scanned automatically, or click “Scan Known Peers”.</p>';
+    return;
+  }
+  let html = active.map((p) => peerCardHtml(p, p.key === selectedPeerKey)).join("");
+  if (banned.length > 0) {
+    html += `<div class="peer-col-title peer-banned-title">Banned</div>`;
+    html += banned.map((p) => peerCardHtml(p, false)).join("");
+  }
+  peerList.innerHTML = html;
+}
+
+function renderPeerFiles() {
   const query = (peerSearchInput?.value || "").trim().toLowerCase();
-  const list = query
-    ? peerResults.filter((r) => (r.fileName || "").toLowerCase().includes(query))
-    : peerResults;
+  const selected = selectedPeerKey
+    ? peerView.peers.find((p) => p.key === selectedPeerKey && !p.banned)
+    : null;
+  const list = peerView.newFiles.filter((r) => {
+    if (selected && r.peerKey !== selected.key) return false;
+    return !query || (r.fileName || "").toLowerCase().includes(query);
+  });
+
+  peerFilesTitle.textContent = selected
+    ? `New files from ${peerDisplayName(selected)} (last ${peerView.settings.refetchDays} days)`
+    : `New files (last ${peerView.settings.refetchDays} days)`;
 
   if (list.length === 0) {
     peerBody.innerHTML = "";
-    peerEmpty.textContent = peerResults.length === 0
-      ? "No peer files yet. Click “Scan Known Peers”."
+    peerEmpty.textContent = peerView.newFiles.length === 0
+      ? "No new peer files in the current window."
       : "No peer files match the current filter.";
     peerEmpty.style.display = "block";
     return;
   }
   peerEmpty.style.display = "none";
   peerBody.innerHTML = list.map((r) => {
-    const hashKey = fileHashKey(r.fileHash);
-    const shared = sharedByHash.get(hashKey);
-    const queued = queuedByHash.get(hashKey);
-    let actionTd;
-    if (shared && shared.path) {
-      actionTd = `<button class="shared-play" data-path="${escapeAttr(shared.path)}" data-name="${escapeAttr(shared.fileName || "")}" title="Open file">▶ Play</button>`;
-    } else if (queued) {
-      actionTd = queuedDownloadButton(queued, { label: "Downloading", className: "peer-queued" });
-    } else {
-      actionTd = peerDownloadButton(r);
-    }
-    const peerLabel = r.peerName || r.peerIp || ("#" + r.ecid);
-    const peerTitle = [r.peerName, r.peerIp && `IP ${r.peerIp}`, `ecid ${r.ecid}`].filter(Boolean).join(" · ");
+    const actionTd = actionCell(r, {
+      downloadClass: "peer-dl",
+      queuedLabel: "Downloading",
+      queuedClass: "peer-queued",
+    });
+    const peerLabel = r.peerName || r.peerIp || "?";
+    const peerTitle = [r.peerName, r.peerIp && `IP ${r.peerIp}`].filter(Boolean).join(" · ");
     return `<tr>
     <td>${actionTd}</td>
     <td title="${escapeHtml(r.fileHash || "")}">${escapeHtml(displayFileName(r.fileName))}</td>
     <td>${formatBytes(r.fileSize)}</td>
-    <td>${r.sourceCount ?? "—"}</td>
-    <td title="${escapeAttr(peerTitle)}"><span class="tag">${escapeHtml(peerLabel.length > 22 ? peerLabel.slice(0, 22) + "…" : peerLabel)}</span></td>
+    <td title="${escapeAttr(peerTitle)}"><span class="tag">${escapeHtml(peerLabel.length > 18 ? peerLabel.slice(0, 18) + "…" : peerLabel)}</span></td>
+    <td class="time-ago" title="${r.firstSeen ? new Date(r.firstSeen).toLocaleString() : ""}">${r.firstSeen ? timeAgo(r.firstSeen) : "—"}</td>
   </tr>`;
   }).join("");
 }
+
+function renderPeerSettings() {
+  // Don't clobber a value the user is currently editing.
+  if (document.activeElement !== peerScanIntervalInput) {
+    peerScanIntervalInput.value = String(peerView.settings.scanIntervalHours ?? 3);
+  }
+  if (document.activeElement !== peerRefetchDaysInput) {
+    peerRefetchDaysInput.value = String(peerView.settings.refetchDays ?? 7);
+  }
+}
+
+function renderPeers() {
+  renderPeerStats();
+  renderPeerList();
+  renderPeerFiles();
+  renderPeerSettings();
+}
+
+async function loadPeers() {
+  try {
+    peerView = await call("peersGetState");
+    if (selectedPeerKey && !peerView.peers.some((p) => p.key === selectedPeerKey && !p.banned)) {
+      selectedPeerKey = null;
+    }
+    renderPeers();
+  } catch (err) {
+    peerStatus.textContent = "Error: " + err.message;
+  }
+}
+
+async function savePeerSettings() {
+  const scanIntervalHours = Number(peerScanIntervalInput.value);
+  const refetchDays = Number(peerRefetchDaysInput.value);
+  if (!(scanIntervalHours > 0) || !(refetchDays > 0)) return;
+  try {
+    peerView = await call("peersUpdateSettings", { scanIntervalHours, refetchDays });
+    renderPeers();
+  } catch (err) {
+    alert("Could not save peer settings:\n" + err.message);
+  }
+}
+
+peerScanIntervalInput.addEventListener("change", savePeerSettings);
+peerRefetchDaysInput.addEventListener("change", savePeerSettings);
 
 if (peerScanBtn) {
   peerScanBtn.addEventListener("click", async () => {
     try {
       peerStatus.textContent = "Starting…";
       peerScanBtn.disabled = true;
-      await call("scanPeerSharedFiles");
+      await call("peersScanNow");
     } catch (err) {
       peerStatus.textContent = "Error: " + err.message;
       peerScanBtn.disabled = !connected;
@@ -1057,31 +1213,58 @@ if (peerScanBtn) {
 }
 
 if (peerSearchInput) {
-  peerSearchInput.addEventListener("input", () => renderPeerResults());
+  peerSearchInput.addEventListener("input", () => renderPeerFiles());
 }
+
+peerList.addEventListener("click", async (e) => {
+  const ban = e.target.closest(".peer-ban");
+  if (ban) {
+    const peer = peerView.peers.find((p) => p.key === ban.dataset.key);
+    if (!confirm(`Ban ${peer ? peerDisplayName(peer) : "this peer"}?\nIt will never be scanned again and its files will be hidden.`)) return;
+    try {
+      peerView = await call("peersBan", { key: ban.dataset.key });
+      if (selectedPeerKey === ban.dataset.key) selectedPeerKey = null;
+      renderPeers();
+    } catch (err) { alert(err.message); }
+    return;
+  }
+
+  const unban = e.target.closest(".peer-unban");
+  if (unban) {
+    try {
+      peerView = await call("peersUnban", { key: unban.dataset.key });
+      renderPeers();
+    } catch (err) { alert(err.message); }
+    return;
+  }
+
+  const card = e.target.closest(".peer-card");
+  if (card && !card.classList.contains("banned")) {
+    selectedPeerKey = selectedPeerKey === card.dataset.key ? null : card.dataset.key;
+    renderPeerList();
+    renderPeerFiles();
+  }
+});
 
 if (peerBody) {
   peerBody.addEventListener("click", async (e) => {
-    const play = e.target.closest(".shared-play");
-    if (play) {
-      try {
-        await call("openFile", { filePath: play.dataset.path, fileName: play.dataset.name });
-      } catch (err) {
-        alert("Could not open file:\n" + err.message);
-      }
-      return;
-    }
+    if (await handleSharedPlayClick(e)) return;
 
     const btn = e.target.closest(".peer-dl");
     if (!btn) return;
     try {
-      if (btn.dataset.hash) {
+      // Persisted peer files may predate this aMule session, so the hash is
+      // often unknown to aMule's search-result pool — the ed2k link always works.
+      if (btn.dataset.link) {
+        await call("addEd2kLink", { link: btn.dataset.link, categoryId: 0 });
+      } else if (btn.dataset.hash) {
         const ok = await call("downloadSearchResult", { fileHash: btn.dataset.hash, categoryId: 0 });
         if (ok !== true) throw new Error("aMule did not accept the download.");
+      }
+      if (btn.dataset.hash) {
         queuedByHash.set(fileHashKey(btn.dataset.hash), { fileHash: btn.dataset.hash });
-        renderPeerResults();
+        renderPeerFiles();
       } else {
-        await call("addEd2kLink", { link: btn.dataset.link, categoryId: 0 });
         btn.textContent = "Downloading";
         btn.disabled = true;
       }
@@ -1093,27 +1276,26 @@ if (peerBody) {
 
 window.amule.onPeers((msg) => {
   if (msg.type === "started") {
-    peerResults = [];
-    renderPeerResults();
     peerStatus.textContent = msg.total > 0
       ? `Scanning ${msg.total} peer(s)…`
-      : "No known peers to scan.";
+      : "No peers due for scanning.";
     peerScanBtn.disabled = true;
+    if (msg.total === 0) peerScanBtn.disabled = !connected;
   } else if (msg.type === "peer") {
-    const p = msg.peer;
-    for (const f of p.files || []) {
-      peerResults.push({ ...f, peerName: p.userName, peerIp: p.ip, ecid: p.ecid });
-    }
-    peerStatus.textContent = `Scanned ${msg.index}/${msg.total} peer(s) — ${peerResults.length} file(s) found…`;
-    renderPeerResults();
+    peerStatus.textContent = `Scanned ${msg.index}/${msg.total} — ${msg.name}${msg.newFiles ? ` (+${msg.newFiles} new)` : ""}`;
+    if (msg.newFiles) loadPeers();
   } else if (msg.type === "done") {
-    peerStatus.textContent = `Done. ${peerResults.length} file(s) from ${msg.total} peer(s).`;
+    peerStatus.textContent = `Scan done (${msg.total} peer(s) queried).`;
     peerScanBtn.disabled = !connected;
+    loadPeers();
   } else if (msg.type === "error") {
     peerStatus.textContent = "Error: " + msg.error;
     peerScanBtn.disabled = !connected;
   }
 });
+
+// Load persisted peer state on startup.
+loadPeers();
 
 // ── Init ──
 setConnected(false);
@@ -1128,4 +1310,6 @@ renderSearchPopularKeywords();
       if (saved.password) passwordEl.value = saved.password;
     }
   } catch (_) { /* no saved settings */ }
+  // Always try to connect at startup (silently — the login form stays up on failure).
+  await connectWithForm({ silent: true });
 })();

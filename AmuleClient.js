@@ -32,7 +32,8 @@ function fixMojibake(str) {
   str = str.replaceAll('Ãª', 'ê').replaceAll('Ã©', 'é').replaceAll('Ã¨', 'è')
       .replaceAll('Ã¢','â').replaceAll('Ã´','ô').replaceAll('Ã','a')
       .replaceAll('Ã´','ô').replaceAll('Ã ', 'à').replaceAll('Ã®', 'î')
-      replaceAll('Ã', 'A');
+      .replaceAll('Ã', 'A').replaceAll('Ã§', 'ç').replaceAll('Ã¼', 'ü')
+      .replaceAll('Ã¶', 'ö');
   return str;
 }
 
@@ -693,21 +694,32 @@ class AmuleClient {
    * @param {boolean} [options.asFriend=false] - Treat `ecid` as a friend ECID
    * @param {number} [options.timeoutMs=30000] - Max time to wait for the answer
    * @param {number} [options.intervalMs=1000] - Poll interval in ms
+   * @param {number} [options.settleMs=0] - Long file lists arrive incrementally;
+   *   with settleMs > 0, keep polling after the first results appear and only
+   *   return once the result count has stopped growing for this long.
+   *   With 0 (default), return as soon as the first results appear.
    * @returns {Promise<{ resultsLength: number, results: Object[] }>} Shared files
    *   (parsed like search results), sorted by source count
    */
   async getClientSharedFiles(ecid, options = {}) {
-    const { asFriend = false, timeoutMs = 30_000, intervalMs = 1000 } = options;
+    const { asFriend = false, timeoutMs = 30_000, intervalMs = 1000, settleMs = 0 } = options;
 
     const before = (await this.getSearchResults()).resultsLength;
 
     await this.requestClientSharedFiles(ecid, { asFriend });
 
     const startTime = Date.now();
+    let lastCount = before;
+    let lastGrowth = 0;
     while (Date.now() - startTime < timeoutMs) {
       await new Promise(resolve => setTimeout(resolve, intervalMs));
       const current = await this.getSearchResults();
-      if (current.resultsLength > before) {
+      if (current.resultsLength > lastCount) {
+        if (settleMs <= 0) return current;
+        lastCount = current.resultsLength;
+        lastGrowth = Date.now();
+      } else if (lastCount > before && Date.now() - lastGrowth >= settleMs) {
+        // Results arrived and have stopped growing — the list is complete.
         return current;
       }
     }
