@@ -54,10 +54,34 @@
       cursor: pointer; white-space: nowrap;
     }
     button:hover { border-color: var(--muted); }
+    /* Fast custom tooltip: button titles are moved to data-tip on hover (renderer.js) */
+    button[data-tip] { position: relative; }
+    button[data-tip]:hover::after {
+      content: attr(data-tip);
+      position: absolute; top: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 3px 8px; font-size: 11px; white-space: nowrap;
+      pointer-events: none; z-index: 100;
+      opacity: 0; animation: tip-in .1s ease-out .15s forwards;
+    }
+    @keyframes tip-in { to { opacity: 1; } }
     button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     button.primary:hover { background: var(--accent-hover); }
     button.danger { border-color: var(--red); color: var(--red); }
     button:disabled { opacity: .4; cursor: default; }
+
+    /* ── Table filter inputs ── */
+    .filter-wrap { position: relative; display: inline-flex; align-items: center; margin-left: 8px; vertical-align: middle; }
+    .filter-wrap input { font-size: 12px; padding: 2px 22px 2px 6px; width: 240px; }
+    .filter-clear {
+      position: absolute; right: 0; top: 0; bottom: 0;
+      display: none; align-items: center; justify-content: center;
+      border: none; background: none; padding: 0 5px;
+      color: var(--muted); font-size: 13px; line-height: 1; cursor: pointer;
+    }
+    .filter-clear:hover { color: var(--text); border: none; }
+    .filter-wrap input:not(:placeholder-shown) ~ .filter-clear { display: flex; }
 
     /* ── Status bar ── */
     .status-bar {
@@ -119,6 +143,13 @@
       display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;
     }
     .link-form input { flex: 1; min-width: 200px; }
+    #refreshSharedBtn { font-size: 18px; line-height: 1; padding-top: 0; padding-bottom: 0; }
+    /* My Collection: row action buttons appear only when hovering the row */
+    #sharedBody tr td:last-child button { visibility: hidden; font-size: 14px; line-height: 1; padding: 3px 6px; }
+    #sharedBody tr:hover td:last-child button,
+    #sharedBody tr:focus-within td:last-child button { visibility: visible; }
+    /* My Collection: clicking the file-name cell plays the file */
+    #sharedBody td.name-link { cursor: pointer; }
     .link-form input,
     .search-form input,
     .search-form select {
@@ -133,6 +164,21 @@
       display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;
     }
     .search-form input { flex: 1; min-width: 200px; }
+
+    /* ── Dropdown menu ── */
+    .menu-wrap { position: relative; }
+    .menu {
+      position: absolute; right: 0; top: calc(100% + 4px);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; padding: 4px; z-index: 50;
+      display: flex; flex-direction: column; min-width: 180px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.4);
+    }
+    .menu-item {
+      background: transparent; border: none; border-radius: 4px;
+      text-align: left; padding: 6px 10px;
+    }
+    .menu-item:hover { background: rgba(56,139,253,.15); }
 
     /* ── JSON output ── */
     pre.json {
@@ -177,6 +223,11 @@
       font-size: 12px; color: var(--muted); margin-bottom: 8px;
       max-height: 48px; overflow: auto;
     }
+    .pagination {
+      display: flex; gap: 8px; align-items: center;
+      margin-top: 8px; font-size: 12px; color: var(--muted);
+    }
+    .pagination .page-status { min-width: 180px; }
     .tag {
       display: inline-block; background: var(--surface);
       border: 1px solid var(--border); border-radius: 4px;
@@ -248,6 +299,73 @@
     .search-kw-tag:hover { border-color: var(--muted); color: var(--text); }
     .search-kw-tag .kw-n { color: var(--muted); font-size: 11px; margin-left: 4px; }
 
+    /* ── Peers ── */
+    .peer-toolbar {
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .peer-settings {
+      margin-left: auto;
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12px; color: var(--muted); white-space: nowrap;
+    }
+    .peer-settings .sep { color: var(--border); }
+    .peer-settings input {
+      width: 52px;
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 3px 6px; font-size: 12px; text-align: right;
+    }
+    .peer-settings input:focus { outline: none; border-color: var(--blue); }
+    .peer-stats { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    .stat-chip {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 999px; padding: 3px 12px;
+      font-size: 12px; color: var(--muted);
+    }
+    .stat-chip b { color: var(--text); font-weight: 600; }
+    .peer-layout {
+      display: grid; grid-template-columns: 300px minmax(0, 1fr);
+      gap: 20px; align-items: start;
+    }
+    .peer-col-title {
+      font-size: 12px; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .5px;
+      margin-bottom: 8px;
+    }
+    .peer-list { display: flex; flex-direction: column; gap: 8px; }
+    .peer-card {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 12px;
+      cursor: pointer; transition: border-color .1s;
+    }
+    .peer-card:hover { border-color: var(--muted); }
+    .peer-card.selected { border-color: var(--blue); }
+    .peer-card.banned { opacity: .5; }
+    .peer-card-main { flex: 1; min-width: 0; }
+    .peer-card .peer-name {
+      font-weight: 600; font-size: 13px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .peer-card .peer-meta {
+      font-size: 11px; color: var(--muted);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .peer-new-badge {
+      background: rgba(46,160,67,.15); color: #3fb950;
+      border: 1px solid rgba(46,160,67,.4);
+      border-radius: 999px; padding: 1px 8px;
+      font-size: 11px; font-weight: 600; white-space: nowrap;
+    }
+    .peer-ban-btn {
+      font-size: 11px; padding: 3px 8px;
+      background: transparent; border-color: transparent; color: var(--muted);
+    }
+    .peer-ban-btn:hover { border-color: var(--red); color: var(--red); }
+    .peer-card.banned .peer-ban-btn:hover { border-color: var(--accent); color: var(--accent-hover); }
+    .peer-banned-title { margin-top: 16px; }
+
     /* ── Review modal ── */
     .modal-overlay {
       display: none;
@@ -262,7 +380,7 @@
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 24px;
-      width: 420px; max-width: 95vw;
+      width: 600px; max-width: 95vw;
       display: flex; flex-direction: column; gap: 16px;
     }
     .modal h3 { font-size: 15px; font-weight: 600; }
@@ -296,10 +414,6 @@
     }
     .modal textarea:focus { outline: none; border-color: var(--blue); }
     .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
-    .review-cell { white-space: nowrap; }
-    .review-stars { letter-spacing: 1px; color: var(--yellow); font-size: 13px; }
-    .review-stars.empty { color: var(--border); }
-    .review-comment-icon { color: var(--muted); font-size: 11px; margin-left: 4px; }
     button.review-btn { font-size: 12px; padding: 3px 8px; }
   </style>
 </head>
@@ -335,6 +449,7 @@
     <div class="tab active" data-tab="shared">My Collection</div>
     <div class="tab" data-tab="search">Search</div>
     <div class="tab" data-tab="discoveries">Discoveries</div>
+    <div class="tab" data-tab="peers">Peer Files</div>
   </div>
 
   <!-- Panels -->
@@ -345,17 +460,22 @@
       <div class="link-form">
         <input id="ed2kLink" placeholder="ed2k:// or magnet link" />
         <button id="addLinkBtn" disabled>Add Link</button>
-        <button id="refreshSharedBtn" disabled>Refresh</button>
+        <button id="refreshSharedBtn" disabled title="Refresh the collection">↻</button>
+        <div class="menu-wrap">
+          <button id="importExportBtn" disabled title="Import / export the collection">⇅</button>
+          <div id="importExportMenu" class="menu hidden">
+            <button class="menu-item" id="menuExportBtn">Export to text file…</button>
+            <button class="menu-item" id="menuImportBtn">Import from text file…</button>
+          </div>
+        </div>
       </div>
       <table>
         <thead id="sharedThead">
           <tr>
-            <th style="width:70px">Action</th>
-            <th class="sortable" data-sort="name">File Name<span class="sort-ind" aria-hidden="true"></span><input id="sharedSearch" placeholder="Filter…" style="margin-left:8px;font-size:12px;padding:2px 6px;width:140px;vertical-align:middle" onclick="event.stopPropagation()" /></th>
+            <th class="sortable" data-sort="name">File Name<span class="sort-ind" aria-hidden="true"></span><span class="filter-wrap" onclick="event.stopPropagation()"><input id="sharedSearch" placeholder="Filter…" /><button type="button" class="filter-clear" title="Clear filter" aria-label="Clear filter">✕</button></span></th>
             <th class="sortable" style="width:120px" data-sort="size">Size<span class="sort-ind" aria-hidden="true"></span></th>
             <th class="sortable" style="width:98px" data-sort="popularity" title="Relative share volume in this list: 5★ = highest upload ratio, 0★ = lowest">Popularity<span class="sort-ind" aria-hidden="true"></span></th>
             <th class="sortable" style="width:100px" data-sort="added" title="When the file was first added to the collection">Added<span class="sort-ind" aria-hidden="true"></span></th>
-            <th class="sortable" style="width:170px" data-sort="rating" title="Your personal rating">My Review<span class="sort-ind" aria-hidden="true"></span></th>
             <th style="width:160px"></th>
           </tr>
         </thead>
@@ -411,7 +531,7 @@
         <thead>
           <tr>
             <th style="width:80px">Action</th>
-            <th>File Name</th>
+            <th>File Name<span class="filter-wrap"><input id="discSearch" placeholder="Filter…" /><button type="button" class="filter-clear" title="Clear filter" aria-label="Clear filter">✕</button></span></th>
             <th style="width:120px">Size</th>
             <th style="width:80px">Sources</th>
             <th style="width:120px">Keyword</th>
@@ -420,7 +540,48 @@
         </thead>
         <tbody id="discBody"></tbody>
       </table>
+      <div class="pagination" id="discPagination" style="display:none">
+        <button id="discPrevPage" type="button">Previous</button>
+        <span id="discPageStatus" class="page-status"></span>
+        <button id="discNextPage" type="button">Next</button>
+      </div>
       <p class="muted mb" id="discEmpty" style="display:none">No discoveries yet.</p>
+    </div>
+
+    <!-- Peer Files -->
+    <div class="panel" id="panel-peers">
+      <div class="peer-toolbar">
+        <button id="peerScanBtn" class="primary" disabled>Scan Known Peers</button>
+        <span class="muted" id="peerStatus"></span>
+        <div class="peer-settings" title="Scans look for currently-known peers; peers who shared their file list are re-fetched on the longer interval, which is also the “new files” window.">
+          <label>Scan every <input id="peerScanIntervalInput" type="number" min="1" step="1" /> h</label>
+          <span class="sep">·</span>
+          <label>Re-fetch every <input id="peerRefetchDaysInput" type="number" min="1" step="1" /> d</label>
+        </div>
+      </div>
+      <div class="peer-stats" id="peerStats"></div>
+      <div class="peer-layout">
+        <aside class="peer-list-col">
+          <div class="peer-col-title">Peers with shared lists</div>
+          <div id="peerList" class="peer-list"></div>
+        </aside>
+        <section class="peer-files-col">
+          <div class="peer-col-title" id="peerFilesTitle">New files</div>
+          <table>
+            <thead>
+              <tr>
+                <th style="width:90px">Action</th>
+                <th>File Name<span class="filter-wrap"><input id="peerSearch" placeholder="Filter…" /><button type="button" class="filter-clear" title="Clear filter" aria-label="Clear filter">✕</button></span></th>
+                <th style="width:110px">Size</th>
+                <th style="width:170px">Peer</th>
+                <th style="width:110px">First Seen</th>
+              </tr>
+            </thead>
+            <tbody id="peerBody"></tbody>
+          </table>
+          <p class="muted mb" id="peerEmpty" style="display:none"></p>
+        </section>
+      </div>
     </div>
 
   </div>
@@ -428,9 +589,8 @@
 </div>
 
 <!-- Review modal -->
-<div id="reviewOverlay" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="reviewModalTitle">
+<div id="reviewOverlay" class="modal-overlay" role="dialog" aria-modal="true">
   <div class="modal">
-    <h3 id="reviewModalTitle">My Review</h3>
     <div>
       <div class="modal-filename-label">File Name</div>
       <input id="reviewFileName" class="modal-filename-input" type="text" spellcheck="false" />

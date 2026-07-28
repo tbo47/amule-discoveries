@@ -1,0 +1,65 @@
+name: Build macOS app
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build DMG (arm64 + x64)
+        run: npx electron-builder --mac --publish never
+        env:
+          # The app is not code-signed; skip identity auto-discovery on CI.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Fill Homebrew cask with version and checksums
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
+            VERSION="$(node -p "require('./package.json').version")"
+          fi
+          SHA_ARM="$(shasum -a 256 "dist/amule-discoveries-${VERSION}-arm64.dmg" | awk '{print $1}')"
+          SHA_X64="$(shasum -a 256 "dist/amule-discoveries-${VERSION}-x64.dmg" | awk '{print $1}')"
+          sed -i '' \
+            -e "s/REPLACE_WITH_VERSION/${VERSION}/" \
+            -e "s/REPLACE_WITH_ARM64_SHA256/${SHA_ARM}/" \
+            -e "s/REPLACE_WITH_X64_SHA256/${SHA_X64}/" \
+            Casks/amule-discoveries.rb
+          cp Casks/amule-discoveries.rb dist/
+          cat dist/amule-discoveries.rb
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: |
+            dist/*.dmg
+            dist/amule-discoveries.rb
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.dmg
+            dist/amule-discoveries.rb
+          generate_release_notes: true

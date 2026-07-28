@@ -19,6 +19,8 @@ const channels = [
   "getServerList",
   "getCategories",
   "refreshSharedFiles",
+  "exportCollection",
+  "importCollection",
   "openFile",
   "deleteFile",
   "updateFileReview",
@@ -28,6 +30,11 @@ const channels = [
   "discoveryRemoveKeyword",
   "discoveryUpdateKeyword",
   "discoveryRunNow",
+  "peersGetState",
+  "peersScanNow",
+  "peersBan",
+  "peersUnban",
+  "peersUpdateSettings",
   "getConnectionSettings",
 ];
 
@@ -40,6 +47,13 @@ api.onDiscovery = (callback) => {
   ipcRenderer.on("discovery:progress", (_e, p) => callback({ type: "progress", ...p }));
   ipcRenderer.on("discovery:error", (_e, p) => callback({ type: "error", ...p }));
   ipcRenderer.on("discovery:updated", () => callback({ type: "updated" }));
+};
+
+api.onPeers = (callback) => {
+  ipcRenderer.on("peers:started", (_e, p) => callback({ type: "started", ...p }));
+  ipcRenderer.on("peers:peer", (_e, p) => callback({ type: "peer", ...p }));
+  ipcRenderer.on("peers:done", (_e, p) => callback({ type: "done", ...p }));
+  ipcRenderer.on("peers:error", (_e, p) => callback({ type: "error", ...p }));
 };
 
 contextBridge.exposeInMainWorld("amule", api);

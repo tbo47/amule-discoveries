@@ -1,11 +1,12 @@
 "use strict";
 
 const path = require("path");
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog } = require("electron");
 const { execFile } = require("child_process");
 const fs = require("fs");
 const AmuleClient = require("../AmuleClient");
 const discoveries = require("./discoveries");
+const peers = require("./peers");
 
 let mainWindow = null;
 let client = null;
@@ -102,12 +103,14 @@ ipc("amule:connect", async ({ host, port, password }) => {
 
   saveConnectionSettings(safeHost, safePort, password || "");
   discoveries.startScheduler(() => client, notifyRenderer);
+  peers.startScheduler(() => client, notifyRenderer);
 
   return { host: safeHost, port: safePort };
 });
 
 ipc("amule:disconnect", async () => {
   discoveries.stopScheduler();
+  peers.stopScheduler();
   if (client) {
     try { client.close(); } catch (_) { /* ignore */ }
     client = null;
@@ -125,8 +128,7 @@ ipc("amule:getDownloadQueue", async () => {
   return client.getDownloadQueue();
 });
 
-ipc("amule:getSharedFiles", async () => {
-  requireClient();
+async function getCollectionFiles() {
   const files = await client.getSharedFiles();
   const downloadQueue = await client.getDownloadQueue();
   const filesWithoutDownloadQueue = files.filter(f => !downloadQueue.some(d => d.fileHash === f.fileHash));
@@ -138,14 +140,121 @@ ipc("amule:getSharedFiles", async () => {
   }
   filesWithoutDownloadQueue.sort((a, b) => b.firstSeen - a.firstSeen || (a.fileName || "").localeCompare(b.fileName || ""));
   return filesWithoutDownloadQueue;
+}
+
+ipc("amule:getSharedFiles", async () => {
+  requireClient();
+  return getCollectionFiles();
+});
+
+function ed2kLinkFor(f, source) {
+  let link = f.ed2kLink;
+  if (!link) {
+    if (!f.fileHash) return "";
+    link = `ed2k://|file|${encodeURIComponent(f.fileName || "unknown")}|${f.fileSize || 0}|${f.fileHash}|/`;
+  }
+  if (source && !/\|sources,/i.test(link)) {
+    link = link.endsWith("|/")
+      ? `${link}|sources,${source}|/`
+      : `${link}|/|sources,${source}|/`;
+  }
+  return link;
+}
+
+/** High ed2k IDs encode the client's public IP as a little-endian uint32. */
+function ipFromEd2kId(id) {
+  const n = Number(id && typeof id === "object" ? id._value : id);
+  if (!Number.isFinite(n) || n <= 0x1000000) return null; // low ID or unknown
+  return [n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff].join(".");
+}
+
+/** Return "ip:port" for this aMule instance, or null if it cannot be determined (low ID). */
+async function getSelfEd2kSource() {
+  try {
+    const [connState, prefs] = await Promise.all([
+      client.getConnectionState(),
+      client.getConnectionPreferences(),
+    ]);
+    const cs = connState?.EC_TAG_CONNSTATE || connState || {};
+    const ip = ipFromEd2kId(cs.EC_TAG_CLIENT_ID) || ipFromEd2kId(cs.EC_TAG_ED2K_ID);
+    if (!ip) return null;
+    const port = Number(prefs?.tcpPort) || 4662;
+    return `${ip}:${port}`;
+  } catch (_) {
+    return null;
+  }
+}
+
+function collectionToText(files, source) {
+  return files
+    .map((f) => {
+      const link = ed2kLinkFor(f, source);
+      if (!link) return null;
+      return `${f.fileName || "?"}\n${link}`;
+    })
+    .filter(Boolean)
+    .join("\n\n") + "\n";
+}
+
+ipc("amule:exportCollection", async ({ query } = {}) => {
+  requireClient();
+  let files = await getCollectionFiles();
+  const q = (query || "").trim().toLowerCase();
+  if (q) files = files.filter((f) => (f.fileName || "").toLowerCase().includes(q));
+  if (files.length === 0) {
+    throw new Error(q ? "No files match the current filter, nothing to export." : "Collection is empty, nothing to export.");
+  }
+
+  const date = new Date().toISOString().slice(0, 10);
+  const filterSlug = q ? "-" + q.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "") : "";
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    title: "Export My Collection",
+    defaultPath: path.join(app.getPath("downloads"), `amule-collection${filterSlug}-${date}.txt`),
+    filters: [{ name: "Text", extensions: ["txt"] }],
+  });
+  if (canceled || !filePath) return { exported: false };
+
+  const source = await getSelfEd2kSource();
+  await fs.promises.writeFile(filePath, collectionToText(files, source), "utf8");
+  return { exported: true, filePath, count: files.length };
+});
+
+ipc("amule:importCollection", async () => {
+  requireClient();
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: "Import Collection",
+    defaultPath: app.getPath("downloads"),
+    filters: [{ name: "Text", extensions: ["txt"] }],
+    properties: ["openFile"],
+  });
+  if (canceled || !filePaths || filePaths.length === 0) return { imported: false };
+
+  const text = await fs.promises.readFile(filePaths[0], "utf8");
+  const links = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("ed2k://|file|"));
+  if (links.length === 0) throw new Error("No ed2k://|file| links found in this file.");
+
+  let added = 0;
+  let failed = 0;
+  for (const link of links) {
+    try {
+      await client.addEd2kLink(link, 0);
+      added++;
+    } catch (_) {
+      failed++;
+    }
+  }
+  return { imported: true, added, failed, total: links.length };
 });
 
 ipc("amule:updateFileReview", async ({ fileHash, rating, comment }) => {
   requireClient();
   if (!fileHash) throw new Error("fileHash is required.");
-  const safeRating = (rating != null && rating >= 0 && rating <= 5) ? Number(rating) : 0;
+  const safeRating = (rating != null && rating >= 0 && rating <= 5) ? Math.round(Number(rating)) : 0;
   const safeComment = typeof comment === "string" ? comment.trim() : "";
-  return client.setFileComment(fileHash, safeComment, safeRating);
+  return client.setFileRatingComment(fileHash, safeComment, safeRating);
 });
 
 ipc("amule:renameFile", async ({ fileHash, newName }) => {
@@ -215,6 +324,13 @@ const VLC_PATHS = {
   linux: ["/usr/bin/vlc", "/snap/bin/vlc", "/usr/bin/cvlc"],
 };
 
+const AUDIO_VIDEO_EXTENSIONS = new Set([
+  ".3gp", ".aac", ".aif", ".aiff", ".ape", ".asf", ".avi", ".flac",
+  ".flv", ".m4a", ".m4v", ".mka", ".mkv", ".mov", ".mp3", ".mp4",
+  ".mpeg", ".mpg", ".ogg", ".ogm", ".ogv", ".opus", ".ts", ".vob",
+  ".wav", ".webm", ".wma", ".wmv",
+]);
+
 function findVlc() {
   const candidates = VLC_PATHS[process.platform] || [];
   for (const p of candidates) {
@@ -223,12 +339,32 @@ function findVlc() {
   return null;
 }
 
+function isAudioVideoFile(filePath) {
+  return AUDIO_VIDEO_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+async function openWithOperatingSystem(filePath) {
+  if (process.platform === "darwin") {
+    await new Promise((resolve, reject) => {
+      execFile("open", [filePath], (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    return true;
+  }
+
+  const result = await shell.openPath(filePath);
+  if (result) throw new Error(result);
+  return true;
+}
+
 ipc("amule:openFile", async ({ filePath, fileName }) => {
   if (!filePath) throw new Error("No file path provided.");
 
   const fullPath = fileName ? path.join(filePath, fileName) : filePath;
 
-  const vlc = findVlc();
+  const vlc = isAudioVideoFile(fullPath) ? findVlc() : null;
   if (vlc) {
     console.log(`[VLC] ${vlc} ${JSON.stringify(fullPath)}`);
     return new Promise((resolve, reject) => {
@@ -240,9 +376,7 @@ ipc("amule:openFile", async ({ filePath, fileName }) => {
     });
   }
 
-  const result = await shell.openPath(fullPath);
-  if (result) throw new Error(result);
-  return true;
+  return openWithOperatingSystem(fullPath);
 });
 
 ipc("amule:deleteFile", async ({ filePath, fileName }) => {
@@ -282,6 +416,34 @@ ipc("amule:discoveryRunNow", async () => {
   return true;
 });
 
+// ── Peer shared files (persisted in peers.json) ──
+
+ipc("amule:peersGetState", async () => {
+  return peers.getView();
+});
+
+ipc("amule:peersScanNow", async () => {
+  requireClient();
+  // Fire-and-forget; progress streams to the renderer over peers:* events.
+  peers.scan(() => client, notifyRenderer, { force: true });
+  return true;
+});
+
+ipc("amule:peersBan", async ({ key }) => {
+  peers.setBanned(key, true);
+  return peers.getView();
+});
+
+ipc("amule:peersUnban", async ({ key }) => {
+  peers.setBanned(key, false);
+  return peers.getView();
+});
+
+ipc("amule:peersUpdateSettings", async ({ scanIntervalHours, refetchDays }) => {
+  peers.updateSettings({ scanIntervalHours, refetchDays });
+  return peers.getView();
+});
+
 ipc("amule:getConnectionSettings", async () => {
   return loadConnectionSettings();
 });
@@ -304,6 +466,7 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   discoveries.stopScheduler();
+  peers.stopScheduler();
   if (client) {
     try { client.close(); } catch (_) { /* ignore */ }
     client = null;
