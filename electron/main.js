@@ -147,53 +147,22 @@ ipc("amule:getSharedFiles", async () => {
   return getCollectionFiles();
 });
 
-function ed2kLinkFor(f, source) {
-  let link = f.ed2kLink;
+function ed2kLinkFor(f) {
+  const link = f.ed2kLink;
   if (!link) {
     if (!f.fileHash) return "";
-    link = `ed2k://|file|${encodeURIComponent(f.fileName || "unknown")}|${f.fileSize || 0}|${f.fileHash}|/`;
+    return `ed2k://|file|${encodeURIComponent(f.fileName || "unknown")}|${f.fileSize || 0}|${f.fileHash}|/`;
   }
-  if (source && !/\|sources,/i.test(link)) {
-    link = link.endsWith("|/")
-      ? `${link}|sources,${source}|/`
-      : `${link}|/|sources,${source}|/`;
-  }
-  return link;
+  // Drop any |sources,...| segment so exported links carry only name/size/hash.
+  const bare = link.replace(/\|sources,[^|]*\|\/?/gi, "");
+  return bare.endsWith("|/") ? bare : `${bare}|/`;
 }
 
-/** High ed2k IDs encode the client's public IP as a little-endian uint32. */
-function ipFromEd2kId(id) {
-  const n = Number(id && typeof id === "object" ? id._value : id);
-  if (!Number.isFinite(n) || n <= 0x1000000) return null; // low ID or unknown
-  return [n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff].join(".");
-}
-
-/** Return "ip:port" for this aMule instance, or null if it cannot be determined (low ID). */
-async function getSelfEd2kSource() {
-  try {
-    const [connState, prefs] = await Promise.all([
-      client.getConnectionState(),
-      client.getConnectionPreferences(),
-    ]);
-    const cs = connState?.EC_TAG_CONNSTATE || connState || {};
-    const ip = ipFromEd2kId(cs.EC_TAG_CLIENT_ID) || ipFromEd2kId(cs.EC_TAG_ED2K_ID);
-    if (!ip) return null;
-    const port = Number(prefs?.tcpPort) || 4662;
-    return `${ip}:${port}`;
-  } catch (_) {
-    return null;
-  }
-}
-
-function collectionToText(files, source) {
+function collectionToText(files) {
   return files
-    .map((f) => {
-      const link = ed2kLinkFor(f, source);
-      if (!link) return null;
-      return `${f.fileName || "?"}\n${link}`;
-    })
+    .map((f) => ed2kLinkFor(f))
     .filter(Boolean)
-    .join("\n\n") + "\n";
+    .join("\n") + "\n";
 }
 
 ipc("amule:exportCollection", async ({ query } = {}) => {
@@ -209,13 +178,12 @@ ipc("amule:exportCollection", async ({ query } = {}) => {
   const filterSlug = q ? "-" + q.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "") : "";
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
     title: "Export My Collection",
-    defaultPath: path.join(app.getPath("downloads"), `amule-collection${filterSlug}-${date}.txt`),
-    filters: [{ name: "Text", extensions: ["txt"] }],
+    defaultPath: path.join(app.getPath("downloads"), `amule-collection${filterSlug}-${date}.emulecollection`),
+    filters: [{ name: "eMule Collection", extensions: ["emulecollection"] }],
   });
   if (canceled || !filePath) return { exported: false };
 
-  const source = await getSelfEd2kSource();
-  await fs.promises.writeFile(filePath, collectionToText(files, source), "utf8");
+  await fs.promises.writeFile(filePath, collectionToText(files), "utf8");
   return { exported: true, filePath, count: files.length };
 });
 
@@ -224,7 +192,7 @@ ipc("amule:importCollection", async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
     title: "Import Collection",
     defaultPath: app.getPath("downloads"),
-    filters: [{ name: "Text", extensions: ["txt"] }],
+    filters: [{ name: "Collection", extensions: ["emulecollection", "txt"] }],
     properties: ["openFile"],
   });
   if (canceled || !filePaths || filePaths.length === 0) return { imported: false };
