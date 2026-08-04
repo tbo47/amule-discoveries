@@ -1,17 +1,21 @@
 {
-  "name": "amule-discoveries",
+  "name": "muleteer",
+  "productName": "Muleteer",
   "version": "1.0.0",
-  "description": "aMule discoveries",
+  "description": "Muleteer — a media center for aMule: play your files and discover music and video from the network and other users",
   "main": "electron/main.js",
   "scripts": {
     "test": "node examples/test.js",
+    "prestart": "node scripts/dev-brand.js",
     "start": "electron electron/main.js",
+    "icon": "node scripts/build-icon.js",
     "dist": "electron-builder --mac"
   },
   "keywords": [
     "amule",
     "p2p",
-    "ed2k"
+    "ed2k",
+    "media-center"
   ],
   "author": "tbo47",
   "license": "MIT",
@@ -20,10 +24,11 @@
     "electron-builder": "^26.15.3"
   },
   "build": {
-    "appId": "com.tbo47.amule-discoveries",
-    "productName": "aMule Discoveries",
+    "appId": "com.tbo47.muleteer",
+    "productName": "Muleteer",
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "build"
     },
     "files": [
       "electron/**/*",
@@ -33,7 +38,8 @@
       "package.json"
     ],
     "mac": {
-      "category": "public.app-category.utilities",
+      "category": "public.app-category.entertainment",
+      "icon": "build/icon.icns",
       "target": [
         {
           "target": "dmg",

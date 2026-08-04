@@ -2,6 +2,13 @@
 
 const path = require("path");
 const { app, BrowserWindow, ipcMain, shell, dialog } = require("electron");
+const branding = require("./branding");
+
+// Both must run before anything resolves app.getPath("userData") — the modules
+// required below capture it at load time, and setName is what it depends on.
+branding.applyAppName();
+branding.migrateLegacyUserData();
+
 const { execFile } = require("child_process");
 const fs = require("fs");
 const AmuleClient = require("../AmuleClient");
@@ -73,6 +80,8 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width,
     height,
+    title: branding.APP_NAME,
+    icon: branding.windowIcon(),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -470,6 +479,7 @@ function validPort(p) {
 }
 
 app.whenReady().then(() => {
+  branding.applyDevDockIcon();
   media.registerHandler();
   createWindow();
   app.on("activate", () => {

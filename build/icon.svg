@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#F7A83E"/>
+      <stop offset="0.45" stop-color="#E2732B"/>
+      <stop offset="1" stop-color="#B23F2A"/>
+    </linearGradient>
+
+    <linearGradient id="cream" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#FFFDF7"/>
+      <stop offset="1" stop-color="#FBE4C2"/>
+    </linearGradient>
+
+    <mask id="cut">
+      <rect width="1024" height="1024" fill="black"/>
+      <g fill="white">
+        <!-- long ears rising from the top of the skull: the mule's signature -->
+        <ellipse cx="415" cy="248" rx="62" ry="144" transform="rotate(-18 415 248)"/>
+        <ellipse cx="609" cy="248" rx="62" ry="144" transform="rotate(18 609 248)"/>
+        <!-- head: broad skull and cheeks tapering to a long, narrow muzzle -->
+        <path d="M 512 288
+                 C 616 288 684 348 686 436
+                 C 688 496 668 534 650 574
+                 C 626 630 612 690 604 736
+                 C 594 792 562 820 512 820
+                 C 462 820 430 792 420 736
+                 C 412 690 398 630 374 574
+                 C 356 534 336 496 338 436
+                 C 340 348 408 288 512 288 Z"/>
+      </g>
+      <!-- play triangle knocked back out of the face -->
+      <path d="M 476 432 L 476 568 L 606 500 Z"
+            fill="black" stroke="black" stroke-width="34" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+
+  <rect width="1024" height="1024" rx="230" ry="230" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#cream)" mask="url(#cut)"/>
+</svg>

@@ -37,15 +37,15 @@ jobs:
           if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
             VERSION="$(node -p "require('./package.json').version")"
           fi
-          SHA_ARM="$(shasum -a 256 "dist/amule-discoveries-${VERSION}-arm64.dmg" | awk '{print $1}')"
-          SHA_X64="$(shasum -a 256 "dist/amule-discoveries-${VERSION}-x64.dmg" | awk '{print $1}')"
+          SHA_ARM="$(shasum -a 256 "dist/muleteer-${VERSION}-arm64.dmg" | awk '{print $1}')"
+          SHA_X64="$(shasum -a 256 "dist/muleteer-${VERSION}-x64.dmg" | awk '{print $1}')"
           sed -i '' \
             -e "s/REPLACE_WITH_VERSION/${VERSION}/" \
             -e "s/REPLACE_WITH_ARM64_SHA256/${SHA_ARM}/" \
             -e "s/REPLACE_WITH_X64_SHA256/${SHA_X64}/" \
-            Casks/amule-discoveries.rb
-          cp Casks/amule-discoveries.rb dist/
-          cat dist/amule-discoveries.rb
+            Casks/muleteer.rb
+          cp Casks/muleteer.rb dist/
+          cat dist/muleteer.rb
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -53,7 +53,7 @@ jobs:
           name: macos-dmg
           path: |
             dist/*.dmg
-            dist/amule-discoveries.rb
+            dist/muleteer.rb
 
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -61,5 +61,5 @@ jobs:
         with:
           files: |
             dist/*.dmg
-            dist/amule-discoveries.rb
+            dist/muleteer.rb
           generate_release_notes: true
