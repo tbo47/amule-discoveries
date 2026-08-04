@@ -66,14 +66,20 @@ const tokenByPath = new Map();
 const pathByToken = new Map();
 let nextToken = 1;
 
-function urlFor(fullPath) {
+/**
+ * @param {string} version identifier of the file's current contents. It ends up
+ *   in the query string, which the handler ignores — it is there to give a file
+ *   that was replaced on disk (a conversion, see convert.js) a URL Chromium has
+ *   never seen, otherwise the media element happily replays the old bytes.
+ */
+function urlFor(fullPath, version = "") {
   let token = tokenByPath.get(fullPath);
   if (!token) {
     token = String(nextToken++);
     tokenByPath.set(fullPath, token);
     pathByToken.set(token, fullPath);
   }
-  return `${SCHEME}://stream/${token}`;
+  return `${SCHEME}://stream/${token}` + (version ? `?v=${encodeURIComponent(version)}` : "");
 }
 
 /** Must run before app "ready". */

@@ -8,6 +8,7 @@ const AmuleClient = require("../AmuleClient");
 const discoveries = require("./discoveries");
 const peers = require("./peers");
 const media = require("./media");
+const convert = require("./convert");
 
 // Has to happen before the app is ready, hence the top-level call.
 media.registerScheme();
@@ -326,7 +327,8 @@ ipc("amule:revealFile", async ({ filePath, fileName }) => {
   return true;
 });
 
-ipc("amule:mediaExtensions", async () => media.extensions());
+/** Playable extensions, plus the ones convert.js can turn into playable files. */
+ipc("amule:mediaExtensions", async () => ({ ...media.extensions(), convertible: convert.extensions() }));
 
 /**
  * Resolve a local file for the in-app player: its kind, a media:// URL to
@@ -343,7 +345,7 @@ ipc("amule:mediaOpen", async ({ filePath, fileName, key }) => {
   return {
     kind,
     mime,
-    url: media.urlFor(fullPath),
+    url: media.urlFor(fullPath, `${Math.round(stat.mtimeMs)}-${stat.size}`),
     size: stat.size,
     position: media.getPosition(key || fullPath),
   };
@@ -354,6 +356,41 @@ ipc("amule:savePlayback", async ({ key, position, duration, name }) => {
 });
 
 ipc("amule:clearPlayback", async ({ key }) => media.clearPosition(key));
+
+// ── ffmpeg conversion ──
+
+/**
+ * What would be done to this file, and whether ffmpeg is available at all.
+ * `caps` is the renderer's own canPlayType() answers: only it knows whether
+ * this build of Chromium, on this OS, can decode HEVC or AC3 as-is.
+ */
+ipc("amule:convertInspect", async ({ filePath, fileName, caps }) => {
+  return convert.inspect(fullPathOf(filePath, fileName), caps);
+});
+
+/** Re-run the ffmpeg lookup after the user installed it, without restarting the app. */
+ipc("amule:convertRecheck", async () => {
+  const t = await convert.tools({ refresh: true });
+  return { ready: t.ok, version: t.version, hint: t.hint, error: t.error };
+});
+
+/**
+ * Convert the file and put the result in its place. Resolves when ffmpeg is
+ * done; progress streams to the renderer over "convert:progress" meanwhile.
+ */
+ipc("amule:convertStart", async ({ filePath, fileName, caps }) => {
+  const fullPath = fullPathOf(filePath, fileName);
+  const result = await convert.convert(fullPath, caps, (progress) => {
+    notifyRenderer("convert:progress", { fileName: path.basename(fullPath), ...progress });
+  });
+  // The file on disk changed name and hash: let aMule re-scan the share.
+  if (result.converted && client) {
+    try { await client.refreshSharedFiles(); } catch (_) { /* the collection reload will catch up */ }
+  }
+  return result;
+});
+
+ipc("amule:convertCancel", async () => convert.cancel());
 
 ipc("amule:deleteFile", async ({ filePath, fileName }) => {
   const fullPath = fullPathOf(filePath, fileName);

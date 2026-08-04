@@ -27,6 +27,10 @@ const playerArtInner    = $("playerArtInner");
 const playerArtName     = $("playerArtName");
 const playerViz         = $("playerViz");
 const playerToast       = $("playerToast");
+const playerNotice      = $("playerNotice");
+const playerNoticeText  = $("playerNoticeText");
+const playerNoticeBtn   = $("playerNoticeBtn");
+const playerNoticeClose = $("playerNoticeClose");
 const playerPrevBtn     = $("playerPrevBtn");
 const playerNextBtn     = $("playerNextBtn");
 const playerPlayBtn     = $("playerPlayBtn");
@@ -60,14 +64,50 @@ const PLAYER_VOLUME_KEY = "player.volume";
 
 // ── Opening ──
 
-/** Extensions main.js can stream, fetched once and cached. */
-function playerPlayableExtensions() {
+/** Extensions main.js can stream, and the ones ffmpeg can turn into those. Fetched once. */
+function playerExtensionSets() {
   if (!playerExtsPromise) {
     playerExtsPromise = call("mediaExtensions")
-      .then((e) => new Set([...(e.audio || []), ...(e.video || [])]))
-      .catch(() => new Set());
+      .then((e) => ({
+        playable: new Set([...(e.audio || []), ...(e.video || [])]),
+        convertible: new Set(e.convertible || []),
+      }))
+      .catch(() => ({ playable: new Set(), convertible: new Set() }));
   }
   return playerExtsPromise;
+}
+
+/**
+ * What this Chromium build can actually decode, asked of a real <video>
+ * element. HEVC plays on a Mac and usually not on Linux, AC3 nowhere — the
+ * answers decide whether a stream can be copied or has to be re-encoded, so
+ * they travel with every conversion request.
+ */
+let playerCodecCaps = null;
+
+function playerCodecSupport() {
+  if (playerCodecCaps) return playerCodecCaps;
+  const el = document.createElement("video");
+  const can = (type) => el.canPlayType(type) !== "";
+  playerCodecCaps = {
+    video: {
+      h264: can('video/mp4; codecs="avc1.640028"'),
+      hevc: can('video/mp4; codecs="hev1.1.6.L93.B0"'),
+      hevc10: can('video/mp4; codecs="hev1.2.4.L120.B0"'),
+      vp9: can('video/mp4; codecs="vp09.00.10.08"'),
+      av1: can('video/mp4; codecs="av01.0.04M.08"'),
+    },
+    audio: {
+      aac: can('audio/mp4; codecs="mp4a.40.2"'),
+      mp3: can('audio/mp4; codecs="mp4a.69"') || can("audio/mpeg"),
+      ac3: can('audio/mp4; codecs="ac-3"'),
+      eac3: can('audio/mp4; codecs="ec-3"'),
+      flac: can('audio/mp4; codecs="flac"'),
+      opus: can('audio/mp4; codecs="opus"'),
+      alac: can('audio/mp4; codecs="alac"'),
+    },
+  };
+  return playerCodecCaps;
 }
 
 function playerExtOf(name) {
@@ -105,26 +145,36 @@ async function playerReveal(item) {
 
 /**
  * Entry point for the tables: play the clicked row, with its playable siblings
- * as the playlist. Unplayable files are shown in the file manager instead.
+ * as the playlist. A file the player cannot open is offered to ffmpeg
+ * (convert-ui.js); anything ffmpeg has no business with — archives, documents —
+ * is shown in the file manager instead.
  */
 async function openMediaFromRow(el) {
   const clicked = playerRowItem(el);
   if (!clicked.path) return;
 
-  const exts = await playerPlayableExtensions();
-  if (!exts.has(playerExtOf(clicked.name))) {
-    await playerReveal(clicked);
+  const { playable, convertible } = await playerExtensionSets();
+  const ext = playerExtOf(clicked.name);
+  if (!playable.has(ext)) {
+    if (convertible.has(ext)) convertOpen(clicked, { reason: "container" });
+    else await playerReveal(clicked);
     return;
   }
 
   const scope = el.closest("tbody") || document;
   const siblings = [...scope.querySelectorAll(".shared-play[data-path]")]
     .map(playerRowItem)
-    .filter((it) => it.path && exts.has(playerExtOf(it.name)));
+    .filter((it) => it.path && playable.has(playerExtOf(it.name)));
 
   playerList = siblings.length ? siblings : [clicked];
   const index = playerList.findIndex((it) => playerSameItem(it, clicked));
   await playerLoad(index < 0 ? 0 : index);
+}
+
+/** Play one file on its own — used once a conversion has replaced it. */
+async function playerPlayItem(item) {
+  playerList = [item];
+  await playerLoad(0);
 }
 
 /** @param {number} direction -1/1 animates the slide, 0 does not (first open). */
@@ -134,6 +184,9 @@ async function playerLoad(index, direction = 0) {
   // Claim the index up front so swiping faster than files load still advances
   // one file per swipe instead of fighting the in-flight load.
   playerIndex = index;
+  playerNoticeHide();
+  playerDecodeChecked = false;
+  playerPlayingSince = 0;
   await playerSavePosition({ force: true });
   const token = ++playerLoadToken;
   const item = playerList[index];
@@ -202,6 +255,7 @@ async function playerClose() {
   playerMedia.pause();
   playerMedia.removeAttribute("src");
   playerMedia.load();
+  playerNoticeHide();
   playerStopVisualizer();
   playerOverlay.classList.remove("open", "playing", "kind-audio", "kind-video");
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -304,6 +358,7 @@ function playerAttachMediaEvents(el) {
   el.addEventListener("timeupdate", () => {
     playerSyncProgress();
     playerSavePosition();
+    playerCheckDecoding(el);
   });
   el.addEventListener("progress", playerSyncProgress);
   el.addEventListener("seeked", () => playerSavePosition({ force: true }));
@@ -318,8 +373,13 @@ function playerAttachMediaEvents(el) {
     playerPlayBtn.textContent = "▶";
     playerPlayBtn.title = "Play (Space)";
     playerOverlay.classList.remove("playing");
+    playerPlayingSince = 0;
     playerSavePosition({ force: true });
   });
+
+  // "playing"/"waiting" bracket the stretches where the decoders actually run.
+  el.addEventListener("playing", () => { if (!playerPlayingSince) playerPlayingSince = performance.now(); });
+  el.addEventListener("waiting", () => { playerPlayingSince = 0; });
 
   el.addEventListener("ended", () => {
     if (!playerCurrent) return;
@@ -332,12 +392,20 @@ function playerAttachMediaEvents(el) {
   el.addEventListener("error", () => {
     // MEDIA_ERR_ABORTED just means we replaced the source while it was loading.
     if (!playerCurrent || el !== playerMedia || el.error?.code === MediaError.MEDIA_ERR_ABORTED) return;
-    // The container was in the playable list but the codec inside is not.
     const item = playerCurrent.item;
     const token = playerLoadToken;
-    playerToastShow("This file cannot be played here — opening its folder.");
+    // The container was in the playable list but the codec inside is not — that
+    // is exactly what ffmpeg is here for. A read error is a different problem.
+    const isCodec = el.error?.code !== MediaError.MEDIA_ERR_NETWORK;
+    playerToastShow(isCodec
+      ? "This file's codec cannot be played here — see if it can be converted."
+      : "This file could not be read — opening its folder.");
     setTimeout(async () => {
       if (token !== playerLoadToken) return;
+      if (isCodec) {
+        convertOpen(item, { reason: "codec" }); // closes the player itself
+        return;
+      }
       await playerClose();
       await playerReveal(item);
     }, 1200);
@@ -351,6 +419,65 @@ function playerAttachMediaEvents(el) {
     }
   });
 }
+
+// ── Silent / black playback watchdog ──
+//
+// A container Chromium accepts can still hold a stream it cannot decode, and
+// then it does not complain: an MP4 with AC3 audio plays the picture in
+// silence, an MP4 with an exotic video codec plays the sound over a black
+// frame. No "error" event, no clue in the API — except that nothing was ever
+// decoded. Once playback is properly under way, that is what is checked, and
+// ffmpeg is offered for the stream that is missing.
+
+let playerDecodeChecked = false;
+/** When the current uninterrupted stretch of playback started (0 = not playing). */
+let playerPlayingSince = 0;
+/** The file the notice is currently offering to convert. */
+let playerNoticeFix = null;
+
+function playerCheckDecoding(el) {
+  if (playerDecodeChecked || !playerCurrent || el !== playerMedia) return;
+  // Three seconds of real playback, not three seconds of currentTime: resuming
+  // a file jumps straight to its saved position, and buffering pauses the
+  // decoders — in both cases nothing has been decoded yet and that means nothing.
+  if (el.readyState < 2 || !playerPlayingSince || performance.now() - playerPlayingSince < 3000) return;
+  playerDecodeChecked = true;
+
+  // Non-standard, Chromium-only: undefined on any engine that lacks it, and
+  // `undefined === 0` is false, so an unknown engine simply stays quiet.
+  const silent = el.webkitAudioDecodedByteCount === 0;
+  const blind = playerCurrent.kind === "video" && el.videoWidth === 0;
+  if (silent || blind) playerOfferConversion(playerCurrent.item, { silent, blind });
+}
+
+/** Only offer it if converting would actually bring the missing stream back. */
+async function playerOfferConversion(item, flags) {
+  let helps = false;
+  try {
+    helps = await convertWouldHelp(item, flags);
+  } catch (_) { /* no ffmpeg, unreadable file — say nothing */ }
+  if (!helps || !playerCurrent || !playerSameItem(playerCurrent.item, item)) return;
+
+  playerNoticeFix = { item, flags };
+  playerNoticeText.textContent = flags.silent
+    ? "No sound — this file's audio codec cannot be played here."
+    : "No picture — this file's video codec cannot be played here.";
+  playerNotice.classList.add("show");
+}
+
+function playerNoticeHide() {
+  playerNotice.classList.remove("show");
+  playerNoticeFix = null;
+}
+
+playerNoticeBtn.addEventListener("click", () => {
+  if (!playerNoticeFix) return;
+  const { item, flags } = playerNoticeFix;
+  playerNoticeHide();
+  convertOpen(item, { reason: flags.silent ? "silent" : "blind" });
+});
+
+playerNoticeClose.addEventListener("click", playerNoticeHide);
 
 // ── Audio visualizer ──
 //

@@ -27,6 +27,10 @@ const channels = [
   "mediaOpen",
   "savePlayback",
   "clearPlayback",
+  "convertInspect",
+  "convertRecheck",
+  "convertStart",
+  "convertCancel",
   "deleteFile",
   "updateFileReview",
   "renameFile",
@@ -52,6 +56,10 @@ api.onDiscovery = (callback) => {
   ipcRenderer.on("discovery:progress", (_e, p) => callback({ type: "progress", ...p }));
   ipcRenderer.on("discovery:error", (_e, p) => callback({ type: "error", ...p }));
   ipcRenderer.on("discovery:updated", () => callback({ type: "updated" }));
+};
+
+api.onConvertProgress = (callback) => {
+  ipcRenderer.on("convert:progress", (_e, p) => callback(p));
 };
 
 api.onPeers = (callback) => {

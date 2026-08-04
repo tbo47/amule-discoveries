@@ -416,6 +416,69 @@
     .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
     button.review-btn { font-size: 12px; padding: 3px 8px; }
 
+    /* ── Convert (ffmpeg) modal ── */
+    #convertOverlay { z-index: 300; } /* above the player, which it replaces */
+    .convert-modal { width: 560px; gap: 14px; }
+    .convert-file {
+      font-size: 12px; color: var(--muted);
+      margin-top: 4px; word-break: break-all;
+    }
+    #convertBody { display: flex; flex-direction: column; gap: 10px; }
+    .convert-small { font-size: 12px; }
+    .convert-plan {
+      display: grid; grid-template-columns: auto 1fr auto 1fr;
+      gap: 6px 10px; align-items: baseline;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px; font-size: 13px;
+    }
+    .convert-row { display: contents; }
+    .convert-row-label { color: var(--muted); font-size: 12px; }
+    .convert-row-arrow { color: var(--muted); }
+    .convert-row-to { color: var(--text); }
+    .convert-note {
+      border-left: 2px solid var(--yellow);
+      padding-left: 10px; font-size: 13px;
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .convert-note .convert-small { color: var(--muted); }
+    .convert-cmd {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 10px;
+    }
+    .convert-cmd code {
+      flex: 1; user-select: text;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+    }
+    .convert-cmd button { padding: 2px 8px; font-size: 13px; }
+    #convertBody a { color: var(--blue); }
+    .convert-err {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 10px; font-size: 12px; white-space: pre-wrap;
+      max-height: 140px; overflow: auto; user-select: text;
+    }
+    .convert-bar {
+      height: 8px; border-radius: 999px; overflow: hidden;
+      background: var(--bg); border: 1px solid var(--border);
+    }
+    .convert-bar > div {
+      height: 100%; width: 0; background: var(--blue);
+      transition: width .4s linear;
+    }
+    .convert-bar > div.indeterminate {
+      width: 100%;
+      background: linear-gradient(90deg, transparent, var(--blue), transparent);
+      background-size: 40% 100%; background-repeat: no-repeat;
+      animation: convert-scan 1.2s linear infinite;
+      transition: none;
+    }
+    @keyframes convert-scan {
+      from { background-position: -40% 0; }
+      to   { background-position: 140% 0; }
+    }
+    .convert-status { display: flex; align-items: baseline; font-size: 13px; }
+    .convert-status .spacer { flex: 1; }
+
     /* ── Media player ── */
     .player-overlay {
       display: none;
@@ -509,6 +572,24 @@
       opacity: 0; transition: opacity .2s; pointer-events: none;
     }
     .player-toast.show { opacity: 1; }
+
+    /* Sits above the toast: a codec that cannot be decoded is not a passing
+       message, it stays until the user acts on it. */
+    .player-notice {
+      display: none;
+      position: absolute; left: 50%; bottom: 56px; transform: translateX(-50%);
+      align-items: center; gap: 10px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+      padding: 8px 10px 8px 14px; font-size: 13px;
+      box-shadow: 0 6px 24px rgba(0,0,0,.5);
+      max-width: min(92vw, 620px);
+    }
+    .player-notice.show { display: flex; }
+    .player-notice button { font-size: 12px; padding: 4px 10px; }
+    .player-notice #playerNoticeClose {
+      background: transparent; border-color: transparent; color: var(--muted); padding: 4px 6px;
+    }
+    .player-notice #playerNoticeClose:hover { color: var(--text); }
 
     .player-controls { padding: 14px 20px 20px; display: flex; flex-direction: column; gap: 12px; }
     .player-seek { position: relative; height: 6px; border-radius: 3px; background: var(--border); cursor: pointer; }
@@ -738,6 +819,22 @@
   </div>
 </div>
 
+<!-- Convert (ffmpeg) modal -->
+<div id="convertOverlay" class="modal-overlay" role="dialog" aria-modal="true" aria-label="Convert file">
+  <div class="modal convert-modal">
+    <div>
+      <h3 id="convertHeading">This file cannot be played here</h3>
+      <div class="convert-file" id="convertFileName"></div>
+    </div>
+    <div id="convertBody"></div>
+    <div class="modal-actions">
+      <button id="convertRevealBtn">Show in folder</button>
+      <button id="convertCloseBtn">Close</button>
+      <button id="convertStartBtn" class="primary">Convert</button>
+    </div>
+  </div>
+</div>
+
 <!-- Media player -->
 <div id="playerOverlay" class="player-overlay" role="dialog" aria-modal="true" aria-label="Media player">
   <div class="player-top">
@@ -766,6 +863,11 @@
     </div>
     <button class="player-nav" id="playerNextBtn" title="Next file (Shift+→)" aria-label="Next file">›</button>
     <div class="player-toast" id="playerToast"></div>
+    <div class="player-notice" id="playerNotice">
+      <span id="playerNoticeText"></span>
+      <button id="playerNoticeBtn" class="primary">Convert it</button>
+      <button id="playerNoticeClose" title="Dismiss" aria-label="Dismiss">✕</button>
+    </div>
   </div>
 
   <div class="player-controls">
@@ -789,5 +891,6 @@
 
 <script src="renderer.js"></script>
 <script src="player.js"></script>
+<script src="convert-ui.js"></script>
 </body>
 </html>
