@@ -7,6 +7,10 @@ const fs = require("fs");
 const AmuleClient = require("../AmuleClient");
 const discoveries = require("./discoveries");
 const peers = require("./peers");
+const media = require("./media");
+
+// Has to happen before the app is ready, hence the top-level call.
+media.registerScheme();
 
 let mainWindow = null;
 let client = null;
@@ -165,11 +169,18 @@ function collectionToText(files) {
     .join("\n") + "\n";
 }
 
-ipc("amule:exportCollection", async ({ query } = {}) => {
+/**
+ * `hashes` is the selection the renderer is displaying (filter applied there,
+ * on the Mojibake-repaired names). Absent, everything is exported.
+ */
+ipc("amule:exportCollection", async ({ query, hashes } = {}) => {
   requireClient();
   let files = await getCollectionFiles();
   const q = (query || "").trim().toLowerCase();
-  if (q) files = files.filter((f) => (f.fileName || "").toLowerCase().includes(q));
+  if (Array.isArray(hashes)) {
+    const byHash = new Map(files.filter((f) => f.fileHash).map((f) => [String(f.fileHash).toLowerCase(), f]));
+    files = hashes.map((h) => byHash.get(String(h || "").toLowerCase())).filter(Boolean);
+  }
   if (files.length === 0) {
     throw new Error(q ? "No files match the current filter, nothing to export." : "Collection is empty, nothing to export.");
   }
@@ -283,34 +294,6 @@ ipc("amule:refreshSharedFiles", async () => {
   return client.refreshSharedFiles();
 });
 
-const VLC_PATHS = {
-  darwin: ["/Applications/VLC.app/Contents/MacOS/VLC"],
-  win32: [
-    "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe",
-    "C:\\Program Files (x86)\\VideoLAN\\VLC\\vlc.exe",
-  ],
-  linux: ["/usr/bin/vlc", "/snap/bin/vlc", "/usr/bin/cvlc"],
-};
-
-const AUDIO_VIDEO_EXTENSIONS = new Set([
-  ".3gp", ".aac", ".aif", ".aiff", ".ape", ".asf", ".avi", ".flac",
-  ".flv", ".m4a", ".m4v", ".mka", ".mkv", ".mov", ".mp3", ".mp4",
-  ".mpeg", ".mpg", ".ogg", ".ogm", ".ogv", ".opus", ".ts", ".vob",
-  ".wav", ".webm", ".wma", ".wmv",
-]);
-
-function findVlc() {
-  const candidates = VLC_PATHS[process.platform] || [];
-  for (const p of candidates) {
-    try { if (fs.statSync(p).isFile()) return p; } catch (_) { /* skip */ }
-  }
-  return null;
-}
-
-function isAudioVideoFile(filePath) {
-  return AUDIO_VIDEO_EXTENSIONS.has(path.extname(filePath).toLowerCase());
-}
-
 async function openWithOperatingSystem(filePath) {
   if (process.platform === "darwin") {
     await new Promise((resolve, reject) => {
@@ -327,29 +310,53 @@ async function openWithOperatingSystem(filePath) {
   return true;
 }
 
-ipc("amule:openFile", async ({ filePath, fileName }) => {
+function fullPathOf(filePath, fileName) {
   if (!filePath) throw new Error("No file path provided.");
+  return fileName ? path.join(filePath, fileName) : filePath;
+}
 
-  const fullPath = fileName ? path.join(filePath, fileName) : filePath;
-
-  const vlc = isAudioVideoFile(fullPath) ? findVlc() : null;
-  if (vlc) {
-    console.log(`[VLC] ${vlc} ${JSON.stringify(fullPath)}`);
-    return new Promise((resolve, reject) => {
-      const child = execFile(vlc, [fullPath], (err) => {
-        if (err) reject(err);
-      });
-      child.unref();
-      resolve(true);
-    });
-  }
-
-  return openWithOperatingSystem(fullPath);
+/** Hand the file to the system default application (the player's ↗ button). */
+ipc("amule:openFile", async ({ filePath, fileName }) => {
+  return openWithOperatingSystem(fullPathOf(filePath, fileName));
 });
 
+/** Show the file in Finder/Explorer — used for everything the app cannot play. */
+ipc("amule:revealFile", async ({ filePath, fileName }) => {
+  shell.showItemInFolder(fullPathOf(filePath, fileName));
+  return true;
+});
+
+ipc("amule:mediaExtensions", async () => media.extensions());
+
+/**
+ * Resolve a local file for the in-app player: its kind, a media:// URL to
+ * stream it from, and the position it was last left at.
+ */
+ipc("amule:mediaOpen", async ({ filePath, fileName, key }) => {
+  const fullPath = fullPathOf(filePath, fileName);
+  const stat = await fs.promises.stat(fullPath);
+  if (!stat.isFile()) throw new Error("Not a file.");
+
+  const { kind, mime } = media.classify(fullPath);
+  if (kind === "other") return { kind };
+
+  return {
+    kind,
+    mime,
+    url: media.urlFor(fullPath),
+    size: stat.size,
+    position: media.getPosition(key || fullPath),
+  };
+});
+
+ipc("amule:savePlayback", async ({ key, position, duration, name }) => {
+  return media.savePosition(key, Number(position), Number(duration), name);
+});
+
+ipc("amule:clearPlayback", async ({ key }) => media.clearPosition(key));
+
 ipc("amule:deleteFile", async ({ filePath, fileName }) => {
-  if (!filePath) throw new Error("No file path provided.");
-  const fullPath = fileName ? path.join(filePath, fileName) : filePath;
+  const fullPath = fullPathOf(filePath, fileName);
   console.log(`[DELETE] ${JSON.stringify(fullPath)}`);
   await fs.promises.unlink(fullPath);
   if (client) await client.refreshSharedFiles();
@@ -426,6 +433,7 @@ function validPort(p) {
 }
 
 app.whenReady().then(() => {
+  media.registerHandler();
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

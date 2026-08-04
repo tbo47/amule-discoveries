@@ -1674,6 +1674,28 @@ class AmuleClient {
   // ==========================================================================
 
   /**
+   * Get the user nickname set in aMule's preferences.
+   * @returns {Promise<string>} The nickname, or '' if the daemon did not report one
+   */
+  async getUserNick() {
+    if (DEBUG) console.log("[DEBUG] Requesting user nickname...");
+
+    const reqTags = [
+      this.session.createTag(
+        EC_TAGS.EC_TAG_SELECT_PREFS,
+        EC_TAG_TYPES.EC_TAGTYPE_UINT32,
+        EC_PREFS.EC_PREFS_GENERAL
+      )
+    ];
+
+    const response = await this.session.sendPacket(EC_OPCODES.EC_OP_GET_PREFERENCES, reqTags);
+
+    const generalTag = response.tags.find(t => t.tagId === EC_TAGS.EC_TAG_PREFS_GENERAL);
+    const nickTag = generalTag?.children?.find(t => t.tagId === EC_TAGS.EC_TAG_USER_NICK);
+    return typeof nickTag?.humanValue === "string" ? nickTag.humanValue : "";
+  }
+
+  /**
    * Get connection preferences from aMule.
    * All speed/capacity values are in kB/s.
    * @returns {Promise<Object>} Connection preferences:

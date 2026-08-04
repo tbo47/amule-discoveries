@@ -134,9 +134,10 @@ function sharedPlayButton(shared, fallbackName = "") {
   // The on-disk name, not the Mojibake-repaired display one — it is joined with
   // the path to open the file.
   const name = shared?.rawFileName || shared?.fileName || fallbackName;
+  const title = shared?.fileName || fallbackName || name;
   const disabled = path ? "" : " disabled";
-  const title = path ? "Open file" : "File path unavailable";
-  return `<button class="shared-play" data-path="${escapeAttr(path)}" data-name="${escapeAttr(name)}" title="${escapeAttr(title)}"${disabled} aria-label="Play">▶</button>`;
+  const tip = path ? "Play file" : "File path unavailable";
+  return `<button class="shared-play" data-path="${escapeAttr(path)}" data-name="${escapeAttr(name)}" data-title="${escapeAttr(title)}" data-hash="${escapeAttr(shared?.fileHash || "")}" title="${escapeAttr(tip)}"${disabled} aria-label="Play">▶</button>`;
 }
 
 /** Download button for search / discovery / peer rows; only the CSS class differs. */
@@ -175,17 +176,15 @@ function actionCell(r, opts) {
 }
 
 /**
- * Handle a click on a ".shared-play" button within a results table.
- * Returns true if the click was a play button (and was handled), so callers can early-return.
+ * Handle a click on a ".shared-play" button within a results table: the file
+ * opens in the in-app player (player.js), with the playable rows of the same
+ * table as its playlist. Returns true if the click was a play button (and was
+ * handled), so callers can early-return.
  */
 async function handleSharedPlayClick(e) {
   const play = e.target.closest(".shared-play");
-  if (!play) return false;
-  try {
-    await call("openFile", { filePath: play.dataset.path, fileName: play.dataset.name });
-  } catch (err) {
-    alert("Could not open file:\n" + err.message);
-  }
+  if (!play || play.disabled) return false;
+  await openMediaFromRow(play);
   return true;
 }
 
@@ -500,16 +499,16 @@ function updateSharedHeaderSortIndicators() {
   }
 }
 
-function applySharedSortAndRender() {
+/** The rows My Collection is currently showing: filtered, then sorted. */
+function visibleSharedList() {
   const query = ($("sharedSearch")?.value || "").trim().toLowerCase();
   let list = sharedListCache.slice();
   if (query) list = list.filter(f => (f.fileName || "").toLowerCase().includes(query));
-  if (!list.length) {
-    renderSharedFiles([]);
-    updateSharedHeaderSortIndicators();
-    return;
-  }
-  renderSharedFiles(sortSharedList(list));
+  return list.length ? sortSharedList(list) : [];
+}
+
+function applySharedSortAndRender() {
+  renderSharedFiles(visibleSharedList());
   updateSharedHeaderSortIndicators();
 }
 
@@ -561,7 +560,7 @@ function renderSharedFiles(list) {
     const diskName = f.rawFileName || f.fileName || "";
     return `<tr>
       ${path
-        ? `<td class="shared-play name-link" data-path="${escapeAttr(path)}" data-name="${escapeAttr(diskName)}" title="${escapeAttr(path)} — click to play">${name}</td>`
+        ? `<td class="shared-play name-link" data-path="${escapeAttr(path)}" data-name="${escapeAttr(diskName)}" data-title="${escapeAttr(f.fileName || "")}" data-hash="${escapeAttr(f.fileHash || "")}" title="${escapeAttr(path)} — click to play">${name}</td>`
         : `<td>${name}</td>`}
       <td>${formatBytes(f.fileSize)}</td>
       <td class="muted" style="white-space:nowrap;letter-spacing:1px">${popularityCell(f, popRatings[i])}</td>
@@ -679,7 +678,10 @@ menuExportBtn.addEventListener("click", async () => {
   importExportMenu.classList.add("hidden");
   importExportBtn.disabled = true;
   try {
-    const res = await call("exportCollection", { query: ($("sharedSearch")?.value || "").trim() });
+    // Export what the table shows: the filter runs on repaired names, so the
+    // main process gets the selection by hash instead of re-filtering raw ones.
+    const hashes = visibleSharedList().map(f => f.fileHash).filter(Boolean);
+    const res = await call("exportCollection", { query: ($("sharedSearch")?.value || "").trim(), hashes });
     if (res && res.exported) flashImportExportIcon(`Exported ${res.count} file(s)`);
   } catch (err) {
     alert("Could not export collection:\n" + err.message);
