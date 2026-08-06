@@ -1,10 +1,6 @@
 "use strict";
 
-const fs = require("fs");
-const path = require("path");
-const { app } = require("electron");
-
-const DATA_FILE = path.join(app.getPath("userData"), "peers.json");
+const db = require("./db");
 
 /** Both are user-configurable from the UI. */
 const DEFAULT_SETTINGS = {
@@ -22,22 +18,14 @@ const FETCH_TIMEOUT_MS = 60_000;
 const FETCH_INTERVAL_MS = 1_000;
 const FETCH_SETTLE_MS = 5_000;
 
-function load() {
-  let state;
-  try {
-    state = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-  } catch (_) {
-    state = {};
-  }
-  state.settings = { ...DEFAULT_SETTINGS, ...(state.settings || {}) };
-  if (!state.peers) state.peers = {};
-  if (!state.lastScan) state.lastScan = 0;
-  return state;
+let scanning = false;
+
+function getSettings() {
+  return { ...DEFAULT_SETTINGS, ...(db.getMeta("peerSettings") || {}) };
 }
 
-function save(state) {
-  fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-  fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2));
+function getLastScan() {
+  return db.getMeta("peerLastScan", 0) || 0;
 }
 
 /** Stable identity for a peer across sessions (ecid changes every session). */
@@ -47,80 +35,101 @@ function peerKey(c) {
   return null;
 }
 
-function updateIdentity(peer, c) {
-  if (c.userHash) peer.userHash = String(c.userHash);
-  if (c.userName) peer.userName = c.userName;
-  if (c.ip) peer.ip = c.ip;
-  const soft = c.softwareVersion || c.software;
-  if (soft) peer.software = String(soft);
+// Identity fields only overwrite when the peer actually reported one, so a
+// sparse sighting never blanks out what an earlier fetch established.
+const UPSERT_PEER_SQL = `
+INSERT INTO peers (key, userHash, userName, ip, software, banned, firstSeen, lastSeen, lastFetch)
+VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+ON CONFLICT(key) DO UPDATE SET
+  userHash  = COALESCE(excluded.userHash, peers.userHash),
+  userName  = COALESCE(excluded.userName, peers.userName),
+  ip        = COALESCE(excluded.ip, peers.ip),
+  software  = COALESCE(excluded.software, peers.software),
+  lastSeen  = excluded.lastSeen,
+  lastFetch = CASE WHEN excluded.lastFetch > 0 THEN excluded.lastFetch ELSE peers.lastFetch END
+`;
+
+function upsertPeer(key, c, { ts, lastFetch = 0 }) {
+  db.run(
+    UPSERT_PEER_SQL,
+    String(key),
+    db.text(c.userHash),
+    db.text(c.userName),
+    db.text(c.ip),
+    db.text(c.softwareVersion || c.software),
+    ts,
+    ts,
+    lastFetch
+  );
 }
 
+const INSERT_FILE_SQL = `
+INSERT INTO peer_files (peerKey, fileHash, fileName, fileSize, sourceCount, firstSeen)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(peerKey, fileHash) DO UPDATE SET
+  fileName    = COALESCE(excluded.fileName, peer_files.fileName),
+  sourceCount = COALESCE(excluded.sourceCount, peer_files.sourceCount)
+`;
+
 function updateSettings(fields) {
-  const state = load();
+  const settings = getSettings();
   if (fields.scanIntervalHours != null) {
     const n = Number(fields.scanIntervalHours);
     if (!Number.isFinite(n) || n <= 0) throw new Error("Invalid scan interval.");
-    state.settings.scanIntervalHours = n;
+    settings.scanIntervalHours = n;
   }
   if (fields.refetchDays != null) {
     const n = Number(fields.refetchDays);
     if (!Number.isFinite(n) || n <= 0) throw new Error("Invalid refetch interval.");
-    state.settings.refetchDays = n;
+    settings.refetchDays = n;
   }
-  save(state);
-  return state.settings;
+  db.setMeta("peerSettings", settings);
+  return settings;
 }
 
 function setBanned(key, banned) {
-  const state = load();
-  const peer = state.peers[key];
+  const peer = db.get("SELECT key FROM peers WHERE key = ?", String(key));
   if (!peer) throw new Error("Peer not found.");
-  peer.banned = !!banned;
-  save(state);
-  return state;
+  db.run("UPDATE peers SET banned = ? WHERE key = ?", db.bool(banned), String(key));
+  return getView();
 }
 
 /**
  * Renderer-facing view: peer summaries plus the flat list of files first seen
  * within the "new files" window (settings.refetchDays), newest first.
  */
-function getView(state = load()) {
-  const now = Date.now();
-  const newWindowMs = state.settings.refetchDays * DAY_MS;
-  const peers = [];
-  const newFiles = [];
+function getView() {
+  const settings = getSettings();
+  const since = Date.now() - settings.refetchDays * DAY_MS;
 
-  for (const p of Object.values(state.peers)) {
-    const files = Object.values(p.files || {});
-    const fresh = files.filter((f) => now - f.firstSeen <= newWindowMs);
-    peers.push({
-      key: p.key,
-      userName: p.userName || "",
-      ip: p.ip || "",
-      software: p.software || "",
-      banned: !!p.banned,
-      firstSeen: p.firstSeen || 0,
-      lastFetch: p.lastFetch || 0,
-      lastSeen: p.lastSeen || 0,
-      fileCount: files.length,
-      newCount: p.banned ? 0 : fresh.length,
-    });
-    if (!p.banned) {
-      for (const f of fresh) {
-        newFiles.push({ ...f, peerKey: p.key, peerName: p.userName || "", peerIp: p.ip || "" });
-      }
-    }
-  }
+  const peers = db.all(`
+    SELECT p.key, p.userName, p.ip, p.software, p.banned,
+           p.firstSeen, p.lastFetch, p.lastSeen,
+           (SELECT COUNT(*) FROM peer_files f WHERE f.peerKey = p.key) AS fileCount,
+           CASE WHEN p.banned = 1 THEN 0 ELSE
+             (SELECT COUNT(*) FROM peer_files f WHERE f.peerKey = p.key AND f.firstSeen >= ?)
+           END AS newCount
+    FROM peers p
+    ORDER BY p.banned ASC, newCount DESC, p.lastFetch DESC
+  `, since).map((p) => ({
+    ...p,
+    userName: p.userName || "",
+    ip: p.ip || "",
+    software: p.software || "",
+    banned: !!p.banned,
+  }));
 
-  peers.sort((a, b) =>
-    (a.banned - b.banned) || (b.newCount - a.newCount) || (b.lastFetch - a.lastFetch)
-  );
-  newFiles.sort((a, b) => b.firstSeen - a.firstSeen || (a.fileName || "").localeCompare(b.fileName || ""));
+  const newFiles = db.all(`
+    SELECT f.fileHash, f.fileName, f.fileSize, f.sourceCount, f.firstSeen,
+           f.peerKey, p.userName AS peerName, p.ip AS peerIp
+    FROM peer_files f
+    JOIN peers p ON p.key = f.peerKey
+    WHERE p.banned = 0 AND f.firstSeen >= ?
+    ORDER BY f.firstSeen DESC, f.fileName COLLATE NOCASE ASC
+  `, since).map((f) => ({ ...f, peerName: f.peerName || "", peerIp: f.peerIp || "" }));
 
-  return { settings: state.settings, lastScan: state.lastScan, scanning, peers, newFiles };
+  return { settings, lastScan: getLastScan(), scanning, peers, newFiles };
 }
-
-let scanning = false;
 
 /**
  * Query every currently-known client (download sources, upload/queue peers,
@@ -138,26 +147,27 @@ async function scan(getClient, notifyRenderer, { force = false } = {}) {
   scanning = true;
 
   try {
-    const state = load();
     const now = Date.now();
-    const refetchMs = state.settings.refetchDays * DAY_MS;
+    const refetchMs = getSettings().refetchDays * DAY_MS;
 
     const update = await cl.getUpdate();
     const clients = (update.clients || []).filter((c) => Number.isInteger(c.ecid));
 
     const targets = [];
-    for (const c of clients) {
-      const key = peerKey(c);
-      const known = key ? state.peers[key] : null;
-      if (known) {
-        known.lastSeen = now;
-        updateIdentity(known, c);
-        if (known.banned) continue;
-        if (!force && known.lastFetch && now - known.lastFetch < refetchMs) continue;
+    db.tx(() => {
+      for (const c of clients) {
+        const key = peerKey(c);
+        const known = key
+          ? db.get("SELECT banned, lastFetch FROM peers WHERE key = ?", String(key))
+          : null;
+        if (known) {
+          upsertPeer(key, c, { ts: now });
+          if (known.banned) continue;
+          if (!force && known.lastFetch && now - known.lastFetch < refetchMs) continue;
+        }
+        targets.push({ c, key });
       }
-      targets.push({ c, key });
-    }
-    save(state);
+    });
     notifyRenderer("peers:started", { total: targets.length, known: clients.length });
 
     // Snapshot existing search-result hashes so already-present files are not
@@ -171,10 +181,9 @@ async function scan(getClient, notifyRenderer, { force = false } = {}) {
     for (let i = 0; i < targets.length; i++) {
       const { c, key } = targets[i];
 
-      // Reload state each iteration so a ban applied mid-scan is honored
-      // and never clobbered by a stale in-memory copy.
-      const st = load();
-      if (key && st.peers[key]?.banned) continue;
+      // Re-read the ban flag each iteration so a ban applied mid-scan is honored.
+      const row = key ? db.get("SELECT banned FROM peers WHERE key = ?", String(key)) : null;
+      if (row?.banned) continue;
 
       let fresh = [];
       let error = null;
@@ -193,30 +202,22 @@ async function scan(getClient, notifyRenderer, { force = false } = {}) {
       // Persist responders (and refresh lastFetch on known ones even when
       // nothing new was attributed, so they are not re-queried every scan).
       // A failed query leaves lastFetch untouched so the peer is retried.
-      if (key && (fresh.length > 0 || st.peers[key])) {
+      if (key && (fresh.length > 0 || row)) {
         const ts = Date.now();
-        const peer = st.peers[key] || { key, firstSeen: ts, files: {} };
-        updateIdentity(peer, c);
-        peer.lastSeen = ts;
-        if (!error) peer.lastFetch = ts;
-        if (!peer.files) peer.files = {};
-        for (const r of fresh) {
-          const existing = peer.files[r.fileHash];
-          if (existing) {
-            if (r.fileName) existing.fileName = r.fileName;
-            if (r.sourceCount != null) existing.sourceCount = r.sourceCount;
-          } else {
-            peer.files[r.fileHash] = {
-              fileHash: r.fileHash,
-              fileName: r.fileName,
-              fileSize: r.fileSize,
-              sourceCount: r.sourceCount || 0,
-              firstSeen: ts,
-            };
+        db.tx(() => {
+          upsertPeer(key, c, { ts, lastFetch: error ? 0 : ts });
+          for (const r of fresh) {
+            db.run(
+              INSERT_FILE_SQL,
+              String(key),
+              String(r.fileHash),
+              db.text(r.fileName),
+              db.int(r.fileSize),
+              db.int(r.sourceCount) ?? 0,
+              ts
+            );
           }
-        }
-        st.peers[key] = peer;
-        save(st);
+        });
       }
 
       notifyRenderer("peers:peer", {
@@ -228,9 +229,7 @@ async function scan(getClient, notifyRenderer, { force = false } = {}) {
       });
     }
 
-    const finalState = load();
-    finalState.lastScan = Date.now();
-    save(finalState);
+    db.setMeta("peerLastScan", Date.now());
     notifyRenderer("peers:done", { total: targets.length });
   } catch (err) {
     notifyRenderer("peers:error", { error: err?.message || String(err) });
@@ -245,9 +244,8 @@ function startScheduler(getClient, notifyRenderer) {
   if (schedulerTimer) return;
   const tick = () => {
     if (scanning) return;
-    const state = load();
-    const intervalMs = state.settings.scanIntervalHours * HOUR_MS;
-    if (Date.now() - state.lastScan >= intervalMs) {
+    const intervalMs = getSettings().scanIntervalHours * HOUR_MS;
+    if (Date.now() - getLastScan() >= intervalMs) {
       scan(getClient, notifyRenderer).catch(() => { /* reported via peers:error */ });
     }
   };
@@ -264,8 +262,7 @@ function stopScheduler() {
 
 module.exports = {
   DEFAULT_SETTINGS,
-  load,
-  save,
+  getSettings,
   getView,
   updateSettings,
   setBanned,

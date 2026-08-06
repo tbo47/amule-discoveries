@@ -42,6 +42,8 @@ const playerTimeNow     = $("playerTimeNow");
 const playerTimeTotal   = $("playerTimeTotal");
 const playerVolume      = $("playerVolume");
 const playerMuteBtn     = $("playerMuteBtn");
+const playerRateBtn     = $("playerRateBtn");
+const playerRateMenu    = $("playerRateMenu");
 const playerFsBtn       = $("playerFsBtn");
 const playerRevealBtn   = $("playerRevealBtn");
 const playerExternalBtn = $("playerExternalBtn");
@@ -61,6 +63,7 @@ let playerLastSaveAt = 0;
 let playerExtsPromise = null;
 
 const PLAYER_VOLUME_KEY = "player.volume";
+const PLAYER_RATE_KEY = "player.rate";
 
 // ── Opening ──
 
@@ -211,6 +214,7 @@ async function playerLoad(index, direction = 0) {
   playerPendingResume = Number(info.position) || 0;
 
   playerOverlay.classList.add("open");
+  playerWake(); // a new file always arrives with its title and controls showing
   playerOverlay.classList.toggle("kind-video", info.kind === "video");
   playerOverlay.classList.toggle("kind-audio", info.kind === "audio");
 
@@ -256,6 +260,7 @@ async function playerClose() {
   playerMedia.removeAttribute("src");
   playerMedia.load();
   playerNoticeHide();
+  playerRateMenuOpen(false);
   playerStopVisualizer();
   playerOverlay.classList.remove("open", "playing", "kind-audio", "kind-video");
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -368,6 +373,7 @@ function playerAttachMediaEvents(el) {
     playerPlayBtn.title = "Pause (Space)";
     playerOverlay.classList.add("playing");
     playerResumeAudioContext();
+    playerWake(); // start the fullscreen idle countdown, which pausing stopped
   });
   el.addEventListener("pause", () => {
     playerPlayBtn.textContent = "▶";
@@ -375,6 +381,7 @@ function playerAttachMediaEvents(el) {
     playerOverlay.classList.remove("playing");
     playerPlayingSince = 0;
     playerSavePosition({ force: true });
+    playerWake();
   });
 
   // "playing"/"waiting" bracket the stretches where the decoders actually run.
@@ -410,6 +417,8 @@ function playerAttachMediaEvents(el) {
       await playerReveal(item);
     }, 1200);
   });
+
+  el.addEventListener("ratechange", () => { if (el === playerMedia) playerSyncRateUi(); });
 
   el.addEventListener("volumechange", () => {
     playerVolume.value = String(el.muted ? 0 : el.volume);
@@ -595,6 +604,8 @@ function playerRebuildMediaElement() {
   fresh.preload = "metadata";
   fresh.volume = old.volume;
   fresh.muted = old.muted;
+  fresh.defaultPlaybackRate = old.defaultPlaybackRate;
+  fresh.playbackRate = old.playbackRate;
   old.pause();
   old.replaceWith(fresh);
   playerMedia = fresh;
@@ -647,10 +658,138 @@ playerVolume.addEventListener("input", () => {
   playerMedia.muted = playerMedia.volume === 0;
 });
 
-playerFsBtn.addEventListener("click", () => {
-  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-  else playerOverlay.requestFullscreen().catch(() => {});
+// ── Playback speed ──
+//
+// The rate follows the listener rather than the file: it carries over to the
+// next file and across restarts, which is why the button always spells it out.
+// Both rates are set because load() resets playbackRate to defaultPlaybackRate,
+// and every file starts with a load().
+
+const PLAYER_RATES = [1, 1.25, 1.5, 2];
+
+function playerRateLabel(rate) {
+  return `${rate}×`;
+}
+
+function playerApplyRate(rate) {
+  playerMedia.defaultPlaybackRate = rate;
+  playerMedia.playbackRate = rate;
+}
+
+function playerSetRate(rate) {
+  playerApplyRate(rate);
+  try { localStorage.setItem(PLAYER_RATE_KEY, String(rate)); } catch (_) { /* ignore */ }
+}
+
+function playerSyncRateUi() {
+  const rate = playerMedia.playbackRate;
+  playerRateBtn.textContent = playerRateLabel(rate);
+  playerRateBtn.title = rate === 1 ? "Playback speed" : `Playing at ${playerRateLabel(rate)}`;
+  for (const btn of playerRateMenu.children) {
+    const isCurrent = Number(btn.dataset.rate) === rate;
+    btn.classList.toggle("current", isCurrent);
+    btn.setAttribute("aria-checked", String(isCurrent));
+  }
+}
+
+function playerRateMenuOpen(open) {
+  playerRateMenu.classList.toggle("open", open);
+  playerRateBtn.setAttribute("aria-expanded", String(open));
+  playerWake();
+}
+
+for (const rate of PLAYER_RATES) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.dataset.rate = String(rate);
+  btn.setAttribute("role", "menuitemradio");
+  btn.textContent = rate === 1 ? "Normal" : playerRateLabel(rate);
+  btn.addEventListener("click", () => {
+    playerSetRate(rate);
+    playerRateMenuOpen(false);
+  });
+  playerRateMenu.appendChild(btn);
+}
+
+playerRateBtn.addEventListener("click", () => {
+  playerRateMenuOpen(!playerRateMenu.classList.contains("open"));
 });
+
+// A click anywhere else puts the menu away.
+document.addEventListener("pointerdown", (e) => {
+  if (playerRateMenu.classList.contains("open") && !e.target.closest(".player-rate")) playerRateMenuOpen(false);
+}, true);
+
+// ── Fullscreen ──
+//
+// The whole overlay goes fullscreen, which also puts the window in the OS's own
+// fullscreen mode, and the chrome then floats over the picture (see the .fs
+// rules in index.html). Left alone for a few seconds it fades out along with
+// the cursor; a mouse or trackpad move, a key or a click brings it straight
+// back. It never hides while paused or while the pointer rests on it — hiding
+// what someone is about to click is never right.
+
+const PLAYER_IDLE_MS = 2600;
+let playerIdleTimer = 0;
+let playerPointerOnChrome = false;
+
+function playerToggleFullscreen() {
+  if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+  } else {
+    playerOverlay.requestFullscreen({ navigationUI: "hide" })
+      .catch((err) => playerToastShow("Could not go fullscreen: " + err.message));
+  }
+}
+
+function playerIsFullscreen() {
+  return document.fullscreenElement === playerOverlay;
+}
+
+/** Show the chrome and restart the countdown to hiding it again. */
+function playerWake() {
+  playerOverlay.classList.remove("idle");
+  clearTimeout(playerIdleTimer);
+  if (playerIsFullscreen()) playerIdleTimer = setTimeout(playerGoIdle, PLAYER_IDLE_MS);
+}
+
+function playerGoIdle() {
+  // No countdown while it would be wrong to hide: "play" and the pointer
+  // leaving the chrome start a fresh one.
+  if (!playerIsFullscreen() || playerMedia.paused || playerPointerOnChrome || playerSeeking) return;
+  if (playerRateMenu.classList.contains("open")) return;
+  playerOverlay.classList.add("idle");
+}
+
+playerFsBtn.addEventListener("click", playerToggleFullscreen);
+
+document.addEventListener("fullscreenchange", () => {
+  const on = playerIsFullscreen();
+  playerOverlay.classList.toggle("fs", on);
+  playerFsBtn.title = on ? "Leave fullscreen (f)" : "Fullscreen (f)";
+  // Esc is taken by the browser to leave fullscreen before the page sees it,
+  // so the menu has to be put away here rather than in the keyboard handler.
+  playerRateMenuOpen(false);
+  if (on) {
+    playerWake();
+  } else {
+    clearTimeout(playerIdleTimer);
+    playerOverlay.classList.remove("idle");
+  }
+});
+
+// A trackpad move arrives as pointermove just like a mouse one.
+playerOverlay.addEventListener("pointermove", playerWake);
+playerOverlay.addEventListener("pointerdown", playerWake);
+playerOverlay.addEventListener("wheel", playerWake, { passive: true });
+
+for (const bar of [$("playerControls"), $("playerTop")]) {
+  bar.addEventListener("pointerenter", () => { playerPointerOnChrome = true; });
+  bar.addEventListener("pointerleave", () => {
+    playerPointerOnChrome = false;
+    playerWake();
+  });
+}
 
 // Seek bar: click or drag anywhere on it.
 let playerSeeking = false;
@@ -673,14 +812,14 @@ playerSeek.addEventListener("pointerdown", (e) => {
   playerSeekTo(e);
 });
 playerSeek.addEventListener("pointermove", (e) => { if (playerSeeking) playerSeekTo(e); });
-playerSeek.addEventListener("pointerup", () => {
+playerSeek.addEventListener("pointerup", playerEndSeek);
+playerSeek.addEventListener("pointercancel", playerEndSeek);
+
+function playerEndSeek() {
   playerSeeking = false;
   playerSeek.classList.remove("dragging");
-});
-playerSeek.addEventListener("pointercancel", () => {
-  playerSeeking = false;
-  playerSeek.classList.remove("dragging");
-});
+  playerWake(); // the countdown paused during the drag
+}
 
 // ── Swiping between files ──
 
@@ -723,7 +862,7 @@ playerStage.addEventListener("pointerup", playerEndSwipe);
 playerStage.addEventListener("pointercancel", playerEndSwipe);
 playerStage.addEventListener("dblclick", (e) => {
   if (e.target.closest("button")) return;
-  playerFsBtn.click();
+  playerToggleFullscreen();
 });
 
 // Trackpad: a horizontal two-finger swipe moves to the next/previous file.
@@ -765,7 +904,10 @@ document.addEventListener("keydown", (e) => {
 
   switch (e.key) {
     case "Escape":
-      playerClose();
+      // In fullscreen Esc means "give me the window back", not "close the file".
+      if (playerRateMenu.classList.contains("open")) playerRateMenuOpen(false);
+      else if (playerIsFullscreen()) document.exitFullscreen().catch(() => {});
+      else playerClose();
       break;
     case " ":
     case "k":
@@ -793,11 +935,12 @@ document.addEventListener("keydown", (e) => {
       playerMedia.muted = !playerMedia.muted;
       break;
     case "f":
-      playerFsBtn.click();
+      playerToggleFullscreen();
       break;
     default:
       return;
   }
+  playerWake();
   e.preventDefault();
   e.stopPropagation();
 }, true);
@@ -816,3 +959,9 @@ try {
   if (Number.isFinite(saved) && saved > 0) playerMedia.volume = saved;
 } catch (_) { /* ignore */ }
 playerVolume.value = String(playerMedia.volume);
+
+try {
+  const savedRate = Number(localStorage.getItem(PLAYER_RATE_KEY));
+  if (PLAYER_RATES.includes(savedRate)) playerApplyRate(savedRate);
+} catch (_) { /* ignore */ }
+playerSyncRateUi();

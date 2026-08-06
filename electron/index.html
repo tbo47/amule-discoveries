@@ -617,6 +617,56 @@
     }
     #playerVolume { width: 90px; accent-color: var(--blue); }
     .player-overlay .hint { font-size: 11px; color: var(--muted); }
+
+    /* Playback speed: the button carries the current rate, the menu drops up
+       from it so it clears the control bar in fullscreen too. */
+    .player-rate { position: relative; }
+    #playerRateBtn { min-width: 52px; font-variant-numeric: tabular-nums; }
+    .player-rate-menu {
+      display: none;
+      position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 4;
+      flex-direction: column; gap: 2px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+      padding: 4px; box-shadow: 0 10px 30px rgba(0,0,0,.5);
+    }
+    .player-rate-menu.open { display: flex; }
+    .player-rate-menu button {
+      background: transparent; border-color: transparent; color: var(--text);
+      font-size: 12px; padding: 5px 14px; text-align: left; white-space: nowrap;
+    }
+    .player-rate-menu button:hover { background: rgba(255,255,255,.08); }
+    .player-rate-menu button.current { color: var(--blue); font-weight: 600; }
+
+    /* ── Fullscreen ──
+       The picture takes the whole screen and the chrome floats over it instead
+       of taking a slice of it; after a few seconds without a mouse the chrome
+       and the cursor fade away, and any movement brings them back. */
+    .player-overlay.fs { background: #000; backdrop-filter: none; }
+    .player-overlay.fs .player-stage { padding: 0; }
+    .player-overlay.fs .player-top,
+    .player-overlay.fs .player-controls {
+      position: absolute; left: 0; right: 0; z-index: 3;
+      transition: opacity .25s ease, transform .25s ease;
+    }
+    .player-overlay.fs .player-top {
+      top: 0; padding: 14px 18px 40px;
+      background: linear-gradient(rgba(0,0,0,.8), transparent);
+    }
+    .player-overlay.fs .player-controls {
+      bottom: 0; padding: 48px 22px 18px;
+      background: linear-gradient(transparent, rgba(0,0,0,.85));
+    }
+    .player-overlay.fs .player-nav { transition: opacity .25s ease; }
+    /* Clear of the control bar. */
+    .player-overlay.fs .player-toast { bottom: 100px; }
+    .player-overlay.fs .player-notice { bottom: 140px; }
+
+    .player-overlay.fs.idle { cursor: none; }
+    .player-overlay.fs.idle .player-top,
+    .player-overlay.fs.idle .player-controls,
+    .player-overlay.fs.idle .player-nav { opacity: 0; pointer-events: none; }
+    .player-overlay.fs.idle .player-top { transform: translateY(-10px); }
+    .player-overlay.fs.idle .player-controls { transform: translateY(10px); }
   </style>
 </head>
 <body>
@@ -781,6 +831,11 @@
             </thead>
             <tbody id="peerBody"></tbody>
           </table>
+          <div class="pagination" id="peerPagination" style="display:none">
+            <button id="peerPrevPage" type="button">Previous</button>
+            <span id="peerPageStatus" class="page-status"></span>
+            <button id="peerNextPage" type="button">Next</button>
+          </div>
           <p class="muted mb" id="peerEmpty" style="display:none"></p>
         </section>
       </div>
@@ -837,7 +892,7 @@
 
 <!-- Media player -->
 <div id="playerOverlay" class="player-overlay" role="dialog" aria-modal="true" aria-label="Media player">
-  <div class="player-top">
+  <div class="player-top" id="playerTop">
     <div class="player-titles">
       <div class="player-title" id="playerTitle"></div>
       <div class="player-sub" id="playerSub"></div>
@@ -870,7 +925,7 @@
     </div>
   </div>
 
-  <div class="player-controls">
+  <div class="player-controls" id="playerControls">
     <div class="player-seek" id="playerSeek">
       <div class="player-seek-buffered" id="playerBuffered"></div>
       <div class="player-seek-played" id="playerPlayed"></div>
@@ -882,6 +937,10 @@
       <span class="spacer"></span>
       <span class="hint">Swipe or Shift+←/→ to change file</span>
       <span class="spacer"></span>
+      <div class="player-rate">
+        <button id="playerRateBtn" title="Playback speed" aria-haspopup="true" aria-expanded="false">1×</button>
+        <div class="player-rate-menu" id="playerRateMenu" role="menu" aria-label="Playback speed"></div>
+      </div>
       <button id="playerMuteBtn" title="Mute (m)">🔊</button>
       <input id="playerVolume" type="range" min="0" max="1" step="0.01" aria-label="Volume" />
       <button id="playerFsBtn" title="Fullscreen (f)">⛶</button>

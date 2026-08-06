@@ -322,6 +322,10 @@ const peerStatus        = $("peerStatus");
 const peerBody          = $("peerBody");
 const peerEmpty         = $("peerEmpty");
 const peerSearchInput   = $("peerSearch");
+const peerPagination    = $("peerPagination");
+const peerPrevPage      = $("peerPrevPage");
+const peerNextPage      = $("peerNextPage");
+const peerPageStatus    = $("peerPageStatus");
 
 let sharedTimer = null;
 
@@ -1142,10 +1146,13 @@ const peerFilesTitle        = $("peerFilesTitle");
 const peerScanIntervalInput = $("peerScanIntervalInput");
 const peerRefetchDaysInput  = $("peerRefetchDaysInput");
 
+const PEER_PAGE_SIZE = 1000;
+
 /** Last view from main: { settings, lastScan, scanning, peers, newFiles }. */
 let peerView = { settings: {}, lastScan: 0, scanning: false, peers: [], newFiles: [] };
 /** When set, the files table only shows this peer's new files. */
 let selectedPeerKey = null;
+let peerPage = 1;
 
 function peerDisplayName(p) {
   return p.userName || p.peerName || p.ip || p.peerIp || "(unknown peer)";
@@ -1199,7 +1206,23 @@ function renderPeerList() {
   peerList.innerHTML = html;
 }
 
-function renderPeerFiles() {
+function renderPeerFilesPagination(totalVisible) {
+  if (!peerPagination) return;
+  if (totalVisible === 0) {
+    peerPagination.style.display = "none";
+    return;
+  }
+  const pageCount = Math.max(1, Math.ceil(totalVisible / PEER_PAGE_SIZE));
+  const start = (peerPage - 1) * PEER_PAGE_SIZE + 1;
+  const end = Math.min(start + PEER_PAGE_SIZE - 1, totalVisible);
+  peerPagination.style.display = "flex";
+  peerPrevPage.disabled = peerPage <= 1;
+  peerNextPage.disabled = peerPage >= pageCount;
+  peerPageStatus.textContent = `Showing ${start}-${end} of ${totalVisible} · Page ${peerPage} of ${pageCount}`;
+}
+
+function renderPeerFiles(options = {}) {
+  if (options.resetPage) peerPage = 1;
   const query = (peerSearchInput?.value || "").trim().toLowerCase();
   const selected = selectedPeerKey
     ? peerView.peers.find((p) => p.key === selectedPeerKey && !p.banned)
@@ -1219,10 +1242,16 @@ function renderPeerFiles() {
       ? "No new peer files in the current window."
       : "No peer files match the current filter.";
     peerEmpty.style.display = "block";
+    renderPeerFilesPagination(0);
     return;
   }
   peerEmpty.style.display = "none";
-  peerBody.innerHTML = list.map((r) => {
+  const pageCount = Math.max(1, Math.ceil(list.length / PEER_PAGE_SIZE));
+  peerPage = Math.min(Math.max(peerPage, 1), pageCount);
+  const pageStart = (peerPage - 1) * PEER_PAGE_SIZE;
+  const pageFiles = list.slice(pageStart, pageStart + PEER_PAGE_SIZE);
+  renderPeerFilesPagination(list.length);
+  peerBody.innerHTML = pageFiles.map((r) => {
     const actionTd = actionCell(r, {
       downloadClass: "peer-dl",
       queuedLabel: "Downloading",
@@ -1300,7 +1329,22 @@ if (peerScanBtn) {
 }
 
 if (peerSearchInput) {
-  peerSearchInput.addEventListener("input", () => renderPeerFiles());
+  peerSearchInput.addEventListener("input", () => renderPeerFiles({ resetPage: true }));
+}
+
+if (peerPrevPage) {
+  peerPrevPage.addEventListener("click", () => {
+    if (peerPage <= 1) return;
+    peerPage -= 1;
+    renderPeerFiles();
+  });
+}
+
+if (peerNextPage) {
+  peerNextPage.addEventListener("click", () => {
+    peerPage += 1;
+    renderPeerFiles();
+  });
 }
 
 peerList.addEventListener("click", async (e) => {
@@ -1329,7 +1373,7 @@ peerList.addEventListener("click", async (e) => {
   if (card && !card.classList.contains("banned")) {
     selectedPeerKey = selectedPeerKey === card.dataset.key ? null : card.dataset.key;
     renderPeerList();
-    renderPeerFiles();
+    renderPeerFiles({ resetPage: true });
   }
 });
 

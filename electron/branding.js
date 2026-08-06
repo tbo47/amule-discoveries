@@ -15,11 +15,12 @@ const LEGACY_DIR_NAMES = ["aMule Discoveries", "Electron"];
 // The legacy "Electron" directory is shared with every other unpackaged
 // Electron app on this machine, so only these known-ours files are ever
 // copied out of it — never the directory wholesale.
+//
+// discoveries.json and peers.json are deliberately absent: those stores moved
+// to muleteer.db, so copying them across would only carry dead weight.
 const OWNED_FILES = [
   "connection.json",
   "collection.json",
-  "discoveries.json",
-  "peers.json",
   "playback.json",
 ];
 

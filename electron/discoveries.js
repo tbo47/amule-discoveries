@@ -1,8 +1,6 @@
 "use strict";
 
-const fs = require("fs");
-const path = require("path");
-const { app } = require("electron");
+const db = require("./db");
 
 const INTERVAL_MS = {
   "1h":  1 * 60 * 60 * 1000,
@@ -11,88 +9,87 @@ const INTERVAL_MS = {
   "1w":  7 * 24 * 60 * 60 * 1000,
 };
 
-const DATA_FILE = path.join(app.getPath("userData"), "discoveries.json");
-
-function load() {
-  try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-  } catch (_) {
-    return { keywords: [], results: {} };
-  }
+function getKeywords() {
+  return db.all("SELECT id, label, interval, lastRun FROM keywords ORDER BY rowid");
 }
 
-function save(state) {
-  fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-  fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2));
-}
-
+/** Kept for the IPC handlers, which read `.keywords` off the returned state. */
 function getState() {
-  return load();
+  return { keywords: getKeywords() };
 }
 
 function addKeyword(label, interval) {
   if (!label || !INTERVAL_MS[interval]) throw new Error("Invalid keyword or interval.");
-  const state = load();
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  state.keywords.push({ id, label, interval, lastRun: 0 });
-  save(state);
-  return state;
+  db.run(
+    "INSERT INTO keywords (id, label, interval, lastRun) VALUES (?, ?, ?, 0)",
+    id, String(label), String(interval)
+  );
+  return getState();
 }
 
+/** The ON DELETE CASCADE takes the keyword's results with it — the JSON store
+ *  used to strand them, and orphaned buckets grew to most of the file. */
 function removeKeyword(id) {
-  const state = load();
-  state.keywords = state.keywords.filter((k) => k.id !== id);
-  save(state);
-  return state;
+  db.run("DELETE FROM keywords WHERE id = ?", String(id));
+  return getState();
 }
 
 function updateKeyword(id, fields) {
-  const state = load();
-  const kw = state.keywords.find((k) => k.id === id);
+  const kw = db.get("SELECT id FROM keywords WHERE id = ?", String(id));
   if (!kw) throw new Error("Keyword not found.");
-  if (fields.label !== undefined) kw.label = fields.label;
-  if (fields.interval !== undefined && INTERVAL_MS[fields.interval]) kw.interval = fields.interval;
-  save(state);
-  return state;
+  if (fields.label !== undefined) {
+    db.run("UPDATE keywords SET label = ? WHERE id = ?", db.text(fields.label), String(id));
+  }
+  if (fields.interval !== undefined && INTERVAL_MS[fields.interval]) {
+    db.run("UPDATE keywords SET interval = ? WHERE id = ?", String(fields.interval), String(id));
+  }
+  return getState();
 }
 
-function mergeResults(state, keywordId, searchResults) {
-  if (!state.results[keywordId]) state.results[keywordId] = {};
-  const bucket = state.results[keywordId];
+const MERGE_SQL = `
+INSERT INTO discovery_files (keywordId, fileHash, fileName, fileSize, sourceCount, firstSeen)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(keywordId, fileHash) DO UPDATE SET
+  fileName    = COALESCE(excluded.fileName, discovery_files.fileName),
+  sourceCount = COALESCE(excluded.sourceCount, discovery_files.sourceCount)
+`;
+
+/** Returns how many of `searchResults` had not been seen for this keyword before. */
+function mergeResults(keywordId, searchResults) {
   const now = Date.now();
-  let newCount = 0;
-
-  for (const r of searchResults) {
-    const hash = r.fileHash;
-    if (!hash) continue;
-    if (!bucket[hash]) {
-      bucket[hash] = {
-        fileHash: hash,
-        fileName: r.fileName,
-        fileSize: r.fileSize,
-        sourceCount: r.sourceCount || 0,
-        firstSeen: now,
-      };
-      newCount++;
-    } else {
-      if (r.sourceCount != null) bucket[hash].sourceCount = r.sourceCount;
-      if (r.fileName) bucket[hash].fileName = r.fileName;
+  return db.tx(() => {
+    const before = db.get(
+      "SELECT COUNT(*) AS n FROM discovery_files WHERE keywordId = ?", String(keywordId)
+    ).n;
+    for (const r of searchResults) {
+      if (!r.fileHash) continue;
+      db.run(
+        MERGE_SQL,
+        String(keywordId),
+        String(r.fileHash),
+        db.text(r.fileName),
+        db.int(r.fileSize),
+        db.int(r.sourceCount) ?? 0,
+        now
+      );
     }
-  }
-  return newCount;
+    const after = db.get(
+      "SELECT COUNT(*) AS n FROM discovery_files WHERE keywordId = ?", String(keywordId)
+    ).n;
+    return after - before;
+  });
 }
 
-function getAllResults(state) {
-  const all = [];
-  for (const kwId of Object.keys(state.results)) {
-    const kw = state.keywords.find((k) => k.id === kwId);
-    const kwLabel = kw ? kw.label : "(deleted)";
-    for (const r of Object.values(state.results[kwId])) {
-      all.push({ ...r, keywordId: kwId, keyword: kwLabel });
-    }
-  }
-  all.sort((a, b) => b.firstSeen - a.firstSeen || (a.fileName || "").localeCompare(b.fileName || ""));
-  return all;
+/** Flat, newest-first list of every discovered file, tagged with its keyword. */
+function getAllResults() {
+  return db.all(`
+    SELECT f.fileHash, f.fileName, f.fileSize, f.sourceCount, f.firstSeen,
+           f.keywordId, k.label AS keyword
+    FROM discovery_files f
+    JOIN keywords k ON k.id = f.keywordId
+    ORDER BY f.firstSeen DESC, f.fileName COLLATE NOCASE ASC
+  `);
 }
 
 let schedulerTimer = null;
@@ -106,11 +103,8 @@ function startScheduler(getClient, notifyRenderer) {
     const cl = getClient();
     if (!cl) return;
 
-    const state = load();
     const now = Date.now();
-    const due = state.keywords.filter(
-      (kw) => now - kw.lastRun >= INTERVAL_MS[kw.interval]
-    );
+    const due = getKeywords().filter((kw) => now - kw.lastRun >= INTERVAL_MS[kw.interval]);
     if (due.length === 0) return;
 
     running = true;
@@ -119,8 +113,10 @@ function startScheduler(getClient, notifyRenderer) {
         try {
           const res = await cl.searchAndWaitResults(kw.label, "kad");
           const results = res?.results || [];
-          const newCount = mergeResults(state, kw.id, results);
-          kw.lastRun = Date.now();
+          const newCount = mergeResults(kw.id, results);
+          // Written per keyword: a crash mid-run no longer loses the searches
+          // that already completed, and neither does it re-run them.
+          db.run("UPDATE keywords SET lastRun = ? WHERE id = ?", Date.now(), kw.id);
           if (notifyRenderer) {
             notifyRenderer("discovery:progress", {
               keyword: kw.label,
@@ -137,7 +133,6 @@ function startScheduler(getClient, notifyRenderer) {
           }
         }
       }
-      save(state);
       if (notifyRenderer) notifyRenderer("discovery:updated", null);
     } finally {
       running = false;
@@ -156,9 +151,7 @@ function stopScheduler() {
 }
 
 function runNow(getClient, notifyRenderer) {
-  const state = load();
-  for (const kw of state.keywords) kw.lastRun = 0;
-  save(state);
+  db.run("UPDATE keywords SET lastRun = 0");
   stopScheduler();
   startScheduler(getClient, notifyRenderer);
 }
@@ -169,10 +162,9 @@ module.exports = {
   addKeyword,
   removeKeyword,
   updateKeyword,
+  mergeResults,
   getAllResults,
   startScheduler,
   stopScheduler,
   runNow,
-  load,
-  save,
 };

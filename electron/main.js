@@ -12,6 +12,7 @@ branding.migrateLegacyUserData();
 const { execFile } = require("child_process");
 const fs = require("fs");
 const AmuleClient = require("../AmuleClient");
+const db = require("./db");
 const discoveries = require("./discoveries");
 const peers = require("./peers");
 const media = require("./media");
@@ -437,7 +438,7 @@ ipc("amule:discoveryRunNow", async () => {
   return true;
 });
 
-// ── Peer shared files (persisted in peers.json) ──
+// ── Peer shared files (persisted in muleteer.db) ──
 
 ipc("amule:peersGetState", async () => {
   return peers.getView();
@@ -495,4 +496,10 @@ app.on("window-all-closed", () => {
     client = null;
   }
   if (process.platform !== "darwin") app.quit();
+});
+
+// Closing checkpoints the WAL back into muleteer.db, so the store is a single
+// tidy file between runs.
+app.on("will-quit", () => {
+  db.close();
 });
